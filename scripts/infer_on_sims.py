@@ -1,6 +1,3 @@
-# -s C:\Users\ItayMNB03\source\repos\CEproject\SIM -t C:\Users\ItayMNB03\source\repos\CEproject\SIM\tree.newick 
-# -o C:\Users\ItayMNB03\source\repos\CEproject\OUT -n 1:7 -r 4 
-
 import os
 import random
 import argparse
