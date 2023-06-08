@@ -1,28 +1,13 @@
-# python /groups/itay_mayrose/ronenshtein/chrevodata/scripts/simulate_models.py
-# -n 120 -t /groups/itay_mayrose/ronenshtein/chrevodata/kalanchoe/ -m g+L_l+L_du+E_de+C_b+C -k 1 -o /groups/itay_mayrose/ronenshtein/chrevodata/kalanchoe/chromevol/res_4/ -r all
-
 import os
 import argparse
 from utils import paramio, get_time, create_job_file, create_nodes_split_file, create_rescaled_tree
 from defs import *
 
-xstr = lambda s: '' if s is None else str(s)
-lstd = lambda l: [l] if not isinstance(l, list) else l
+def main(args):
 
-if __name__ == '__main__':
+    xstr = lambda s: '' if s is None else str(s)
+    lstd = lambda l: [l] if not isinstance(l, list) else l
 
-    parser = argparse.ArgumentParser(description='simulates homogeneous and heterogeneous models')
-    parser.add_argument('--in_dir', '-i', type=str,
-        help='input directory; must include: tree.newick, counts.fasta, chromEvol.res, MLAncestralReconstruction.tree, [het] expectations_second_round.txt')
-    parser.add_argument('--num_of_simulations', '-n', type=int, help='number of simulations')
-    parser.add_argument('--model', '-m', type=str, help='adequate model')
-    parser.add_argument('--out_dir', '-o', type=str, help='simulations directory')
-    parser.add_argument('--sampling_fractions', '-s', type=float, nargs='+', help='clade size fractions')
-    parser.add_argument('--multipliers', '-k', type=float, nargs = '+', help='rate multipliers')
-    parser.add_argument('--manipulated_rates', '-r', type=str, nargs='+', help='manipulated rates')
-    parser.add_argument('--empirical_hetero_params', '-e', default=None, help='chrom res file to get empirical heterogeneous model data')
-
-    args = parser.parse_args()
     in_dir = args.in_dir
     num_of_simulations = args.num_of_simulations
     model = args.model
@@ -31,6 +16,7 @@ if __name__ == '__main__':
     multipliers = lstd(args.multipliers)
     manipulated_rates = lstd(args.manipulated_rates)
     hetero_res_dir = args.empirical_hetero_params
+    q_on = args.q_on
 
     other_kwargs = {}
     other_dir = out_dir
@@ -76,6 +62,7 @@ if __name__ == '__main__':
                 if not os.path.exists(mult_manupulation_dir):
                     os.makedirs(mult_manupulation_dir)
 
+                new_tree_path = tree_path
                 if xstr(manipulation_model) != '':
                     new_tree_path = os.path.join(mult_manupulation_dir, 'tree.newick')
                     create_rescaled_tree(manipulation_model, multiplier, nodes_file_path, tree_path, new_tree_path, expectation_file_path)
@@ -87,7 +74,24 @@ if __name__ == '__main__':
                 
                 other_kwargs['multiplier'] = multiplier
                 other_kwargs['manipulated_rates'] = manipulations_on[manipulation_model]
-                paramio(mult_manupulation_dir, job_name, counts_path, tree_path) \
+                paramio(mult_manupulation_dir, job_name, counts_path, new_tree_path) \
                     .set_simulated(in_dir, num_of_simulations, **other_kwargs).output()
 
-                create_job_file(mult_manupulation_dir, job_name, mem=10, ncpu=1, exe=CHROMEVOL_SIM_EXE)
+                create_job_file(mult_manupulation_dir, job_name, mem=10, ncpu=1, exe=CHROMEVOL_SIM_EXE, on=q_on)
+
+
+if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser(description='simulates homogeneous and heterogeneous models')
+    parser.add_argument('--in_dir', '-i', type=str,
+        help='input directory; must include: tree.newick, counts.fasta, chromEvol.res, MLAncestralReconstruction.tree, [het] expectations_second_round.txt')
+    parser.add_argument('--num_of_simulations', '-n', type=int, help='number of simulations')
+    parser.add_argument('--model', '-m', type=str, help='adequate model')
+    parser.add_argument('--out_dir', '-o', type=str, help='simulations directory')
+    parser.add_argument('--sampling_fractions', '-s', type=float, nargs='+', help='clade size fractions')
+    parser.add_argument('--multipliers', '-k', type=float, nargs = '+', help='rate multipliers')
+    parser.add_argument('--manipulated_rates', '-r', type=str, nargs='+', help='manipulated rates')
+    parser.add_argument('--empirical_hetero_params', '-e', default=None, help='chrom res file to get empirical heterogeneous model data')
+    parser.add_argument('--q_on', '-q', action=argparse.BooleanOptionalAction, default=True, help='use False to only generate param & job files')
+    
+    main(parser.parse_args())
