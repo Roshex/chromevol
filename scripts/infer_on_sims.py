@@ -18,15 +18,13 @@ def main(args):
     standalone = args.standalone
     out_dir = utl.get_res_path(args.out_dir, standalone)
 
+    req = 0 # flag
     rng = range( * simulation_range[:min(len(simulation_range), 3)] )
-    if randomize <= 0 or randomize >= len(rng):
-        pass
-    else:
+
+    if 0 < randomize < len(rng):
         if seed is not None:
             random.seed(seed)
-    rng = random.sample(rng, randomize)
- 
-    req = 0 # flag
+        rng = random.sample(rng, randomize)
 
     for _ in rng:
         sim_dir = os.path.join(sims_dir, str(_))

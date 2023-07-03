@@ -1,3 +1,6 @@
+# standalone usage example:
+# python simulate_models.py --standalone -n 20 -i "/input/path/" -k 1 -o "/output/path/" 
+
 import os
 import argparse
 import utils as utl
@@ -18,18 +21,13 @@ def main(args):
     out_dir = utl.get_res_path(args.out_dir, standalone)
 
     other_kwargs = {}
-    other_dir = out_dir
+    other_dir = out_dir if hetero_res_dir is None else hetero_res_dir # external params simulation mode
     other_modes_flag = False
     if [1.0] == multipliers: # homogenous simulation mode
         sampling_fractions = [None]
         multipliers = manipulated_rates = [None]
-    else: # other simulation modes
+    else: # multiplier and/or external params simulation modes
         other_modes_flag = True
-        if (0 in multipliers) and (hetero_res_dir is not None): # empirical params simulation mode
-            other_dir = hetero_res_dir
-            multipliers = manipulated_rates = [None]
-        else: # multiplier simulation mode 
-            pass
 
     manipulations_on = {'poly':['demiPloidyR', 'dupl', 'baseNumR'], 'dys':['gain', 'loss'],
                         'all':['demiPloidyR', 'dupl', 'baseNumR', 'gain', 'loss'], None:None}
@@ -92,7 +90,3 @@ if __name__ == '__main__':
     parser.add_argument('--standalone', action='store_true', default=False, help='use standalone flag to generate job file')
     
     main(parser.parse_args())
-
-# standalone example:
-# python simulate_models.py -n 20 -i "/groups/itay_mayrose/ronenshtein/chrevodata/test2/Trees/family/phrymaceae/Homogenous/" -k 1
-# -o "/groups/itay_mayrose/ronenshtein/chrevodata/test2/Trees/family/phrymaceae/Homogenous/" --standalone 

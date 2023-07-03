@@ -142,8 +142,8 @@ class paramio:
         # structure is { model: [ {param:[(index, value)]} ] }
         # where category is the param's index in the list of param dictionaries
         for param, index, model, value in  params_index_models:
-
-            if param == 'demi': # ChromEvol expects 'demiPloidyR' instead of 'demi' in params file!
+            # ChromEvol expects 'demiPloidyR' instead of 'demi' in params file!
+            if param == 'demi':
                 param = 'demiPloidyR'
 
             model_entries = rate_param_dict.setdefault(model, [])
@@ -165,15 +165,11 @@ class paramio:
             for model, param_list in rate_param_dict.items():
                 for category, param_dict in enumerate(param_list):
                     for key, val in param_dict.items():
-                        # index is ignored for now
-                        param = key + '_' + str(int(model)+counter)
-                        setting = str(category+1) + ';' + val[0][1]
-                        if manipulated_rates is not None and key in manipulated_rates:
-                            func = vars(self)[func_conversion_dic[key]]
-                            if (func == 'LINEAR') or (func == 'CONST') or ((func == 'EXP') and (val[0][0] == 0)):
-                                # val[0][0] is the index, not sure why it's compared to 0
-                                setting = str(category+1) + ';' + str(float(val[0][1])*k)
-                        setattr(self, param, setting)
+                        if k == 1 or (manipulated_rates is not None and key in manipulated_rates):
+                            param = key + '_' + str(int(model)+counter)
+                            # first index == '' means baseNum -> a single int value
+                            setting = val[0][1] if val[0][0] == '' else ','.join([str(float(val[_][1])*k) for _ in range(len(val))])
+                            setattr(self, param, str(category+1) + ';' + setting)
             counter += 1
 
     ### simulation parameters ###
@@ -348,7 +344,7 @@ module load {module}
 def get_cmd(path, name, sim_num, model, mode):
     sim_in = os.path.join(path, mode)
     sim_out = os.path.join(sim_in, 'Sims/')
-    tree_path = os.path.join(sim_out, name+'.newick')
+    tree_path = os.path.join(sim_in, name+'.newick')
     inf_on_sim_out = os.path.join(sim_out, 'Infer_on_sims')
 
     cwd = os.getcwd()

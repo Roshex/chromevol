@@ -11,16 +11,17 @@ def split_test_train(df, outer_col, inner_col, bins, train_split):
 
     df_sorted = df[df['selected'] == 'Test'].sort_values(outer_col)
     df_false_rows = df[df['selected'] == 'False']
-
+    
     bins = min(len(df_sorted), bins)
     bin_size = len(df_sorted) // bins
-    k = min(1, int(bin_size * train_split)) # number of rows to be selected from each bin
+    # number of rows to be selected from each bin
+    k = max(1, int(bin_size * train_split))
     modified_indices = []
 
     for i in range(bins):
         start_index = i * bin_size
         end_index = start_index + bin_size if i != bins - 1 else None
-        bin_df = df_sorted[start_index:end_index].sort_values(inner_col)
+        bin_df = df_sorted[start_index:end_index].sort_values(inner_col)       
         selected_rows = bin_df.iloc[::int(len(bin_df)/k)]  # select rows at a constant interval of k
         
         selected_indices = selected_rows.index
