@@ -2,7 +2,7 @@ import os
 import random
 import argparse
 from math import floor
-from utils import paramio, get_res_path, do_job
+import utils as utl
 
 def main(args):
 
@@ -16,7 +16,7 @@ def main(args):
     memcpu_ratio = args.memcpu_ratio
     req_multiplier = args.speed_multiplier
     standalone = args.standalone
-    out_dir = get_res_path(args.out_dir, standalone)
+    out_dir = utl.get_res_path(args.out_dir, standalone)
 
     rng = range( * simulation_range[:min(len(simulation_range), 3)] )
     if randomize <= 0 or randomize >= len(rng):
@@ -44,12 +44,12 @@ def main(args):
         hom_dir = os.path.join(out_dir, hom_str)
         het_dir = os.path.join(out_dir, het_str)
 
-        paramio(hom_dir, 'emp_'+hom_str, counts_path, tree_path).set_empirical(model=model).output()
-        paramio(het_dir, 'emp_'+het_str, counts_path, tree_path).set_empirical(model=model, heterogenous=True, \
+        utl.paramio(hom_dir, 'emp_'+hom_str, counts_path, tree_path).set_empirical(model=model).output()
+        utl.paramio(het_dir, 'emp_'+het_str, counts_path, tree_path).set_empirical(model=model, heterogenous=True, \
             taxa_num=taxa, min_clade_size=min_clade, max_number_of_models=10).output()
 
-        do_job(hom_dir, 'emp_'+hom_str, standalone=standalone)
-        do_job(het_dir, 'emp_'+het_str, ncpu=req, mem=int(req*memcpu_ratio), standalone=standalone)
+        utl.do_job(hom_dir, 'emp_'+hom_str, standalone=standalone)
+        utl.do_job(het_dir, 'emp_'+het_str, ncpu=req, mem=int(req*memcpu_ratio), standalone=standalone)
 
 if __name__ == '__main__':
 

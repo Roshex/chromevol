@@ -1,7 +1,7 @@
 import os
 import argparse
-from utils import paramio, get_res_path, do_job, create_nodes_split_file, create_rescaled_tree
-from defs import *
+import utils as utl
+from defs import CHROMEVOL_SIM_EXE
 
 def main(args):
 
@@ -15,7 +15,7 @@ def main(args):
     manipulated_rates = lstd(args.manipulated_rates)
     hetero_res_dir = args.empirical_hetero_params
     standalone = args.standalone
-    out_dir = get_res_path(args.out_dir, standalone)
+    out_dir = utl.get_res_path(args.out_dir, standalone)
 
     other_kwargs = {}
     other_dir = out_dir
@@ -46,7 +46,7 @@ def main(args):
         if other_modes_flag:
             nodes_file_path = os.path.join(sampling_frac_dir, 'nodes.txt')
             if not os.path.exists(nodes_file_path):
-                create_nodes_split_file(nodes_file_path, sampling_frac, tree_path)
+                utl.create_nodes_split_file(nodes_file_path, sampling_frac, tree_path)
             other_kwargs = {'nodes_file_path': nodes_file_path, 'heterogeneous': True}
       
         for multiplier in multipliers:
@@ -64,7 +64,7 @@ def main(args):
                 new_tree_path = tree_path
                 if xstr(manipulation_model) != '':
                     new_tree_path = os.path.join(mult_manupulation_dir, 'tree.newick')
-                    create_rescaled_tree(manipulation_model, multiplier, nodes_file_path, tree_path, new_tree_path, expectation_file_path)
+                    utl.create_rescaled_tree(manipulation_model, multiplier, nodes_file_path, tree_path, new_tree_path, expectation_file_path)
 
                 job_name = 'sim_'
                 job_name += 'homogenous' if not other_modes_flag else 'heterogenous' + xstr(sampling_frac)
@@ -73,10 +73,10 @@ def main(args):
                 
                 other_kwargs['multiplier'] = multiplier
                 other_kwargs['manipulated_rates'] = manipulations_on[manipulation_model]
-                paramio(mult_manupulation_dir, job_name, counts_path, new_tree_path) \
+                utl.paramio(mult_manupulation_dir, job_name, counts_path, new_tree_path) \
                     .set_simulated(in_dir, num_of_simulations, **other_kwargs).output()
 
-                do_job(mult_manupulation_dir, job_name, mem=10, ncpu=1, exe=CHROMEVOL_SIM_EXE, standalone=standalone)
+                utl.do_job(mult_manupulation_dir, job_name, mem=10, ncpu=1, exe=CHROMEVOL_SIM_EXE, standalone=standalone)
 
 if __name__ == '__main__':
 
