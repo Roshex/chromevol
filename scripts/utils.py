@@ -4,13 +4,20 @@ import os
 import random
 import datetime
 from subprocess import Popen
-from defs import PYTHON_MODULE_COMMAND, CHROMEVOL_EMP_EXE, QUEUE
+from defs import *
+
 
 TOTAL_TO_REQ_SIM_RATIO = 1.5
 MAX_CHR_NUM = 200
 
+
 def get_time():
     return datetime.datetime.now().strftime('%y-%m-%d-%H-%M')
+
+
+def get_res_path(path, standalone):
+    return path if not standalone else os.path.join(path, 'Results_' + get_time())
+
 
 class paramio:
 
@@ -293,32 +300,63 @@ def write_rate_parameters(rate_parameters):
 #################################################################
 
 
-def create_job_file(path, job_name, mem=4, ncpu=1, exe=CHROMEVOL_EMP_EXE, queue=QUEUE, on=True):
+def do_job(path, name, mem=4, ncpu=1, exe=CHROMEVOL_EMP_EXE, queue=QUEUE, standalone=False, cmd=None):
 
+    if cmd==None:
+        param_path = os.path.join(path, f'{name}.params')
+        cmd = f'{exe} param={param_path} > {os.path.join(path, "out.txt")} 2> {os.path.join(path, "err.txt")}\n'
+        
+        if not standalone:
+            print(f'running: {cmd}')
+            os.system(cmd)
+            return
+        # else standalone is True
+    # else cmd was given
+    
     if not os.path.exists(path):
         os.makedirs(path)
 
-    module_python = PYTHON_MODULE_COMMAND
-    param_path = os.path.join(path, f'{job_name}.params')
-    cmd = f'{module_python}{exe} param={param_path} > {os.path.join(path, "out.txt")} 2> {os.path.join(path, "err.txt")}\n'
-    job_path = os.path.join(path, f'{job_name}.sh')
+    module = MODULE_COMMAND
+    env = ACTIVATE_ENV
+    job_path = os.path.join(path, f'{name}.sh')
+    err_path = os.path.join(path, f'{name}.err')
+    out_path = os.path.join(path, f'{name}.out')
     text = f'''\
 #!/bin/bash
 #PBS -S /bin/bash
 #PBS -r y
 #PBS -q {queue}
 #PBS -v PBS_O_SHELL=bash,PBS_ENVIRONMENT=PBS_BATCH
-#PBS -N {job_name}
-#PBS -e {path}.ER
-#PBS -o {path}.OU
+#PBS -N {name}
+#PBS -e {err_path}
+#PBS -o {out_path}
 #PBS -l select=ncpus={ncpu}:mem={mem}gb
+source ~/.bashrc
 cd {path}
+module load {module}
+{env}
 {cmd}
 '''
     with open(job_path, 'w') as file:
         file.write(text)
-    if on:
-        Popen(['qsub', job_path])
+    Popen(['qsub', job_path])
+
+
+def get_cmd(path, name, sim_num, model, mode):
+    sim_out = os.path.join(path, mode)
+    tree_path = os.path.join(sim_out, name+'.newick')
+    inf_on_sim_out = os.path.join(sim_out, 'Infer_on_sims')
+
+    cwd = os.getcwd()
+    ie_path = os.path.join(cwd, 'infer_empirical.py')
+    sm_path = os.path.join(cwd, 'simulate_models.py')
+    is_path = os.path.join(cwd, 'infer_on_sims.py')
+
+    return f'''\
+python {ie_path} -i {path} -o {path} -m {model} -d {mode}
+python {sm_path} -i {sim_out} -o {sim_out} -n {sim_num}
+python {is_path} -i {sim_out} -t {tree_path} -m {model} -o {inf_on_sim_out} -r {sim_num}
+'''
 
 
 def create_nodes_split_file(nodes_file_path, sampling_frac, tree_path):
@@ -609,4 +647,108 @@ def get_scaling_factor_from_expectations(expectation_file_path, manipulated_rate
         sum_of_weights += float(expecation)
     factor = (weight/sum_of_weights) * multiplier
     return factor
+
+
+def count_taxa(tree):
+    return len(tree.get_leaf_names())
+
+
+def count_polytomy(tree, n):
+    internal_nodes = len(list(tree.traverse())) - n
+    max_internal_nodes = n-1
+    polytomy_ratio = 1 - (internal_nodes / max_internal_nodes)
+    return polytomy_ratio
+
+
+def create_counts_hash(counts_file):
+    """
+    puts all counts from a counts file in a dictionary: taxa_name: count. Taxa with an X count are skipped.
+    If there are counts that are X the function returns two hashes and a set of the taxa to prune.
+    :param counts_file in FASTA format
+    :return:(2) dictionary of counts
+    """
+    d = {}
+    with open(counts_file, "r") as counts_handler:
+        for line in counts_handler:
+            line = line.strip()
+            if line.startswith('>'):  # taxon name
+                name = line[1:]
+            else:
+                if line != "x":
+                    num = int(line)
+                    d[name] = num
+    return d
+
+
+def remove_root_polytomies(tree_file, counts_file, mx=2):
+
+    # remove root leaves if over 2
+    tree = Tree(tree_file)
+    flag = 0
+    polytomy_children_names = []
+    root = tree.get_tree_root()
+    for child in root.get_children():
+        if child.is_leaf() and flag >= mx:
+            polytomy_children_names.append(child.name)
+            root.remove_child(child)
+        flag += 1
+    tree.write(format=5, outfile=tree_file)
+
+    # remove detached children from counts file
+    with open(counts_file, 'r') as input_counts_file:
+        lines = input_counts_file.readlines()
+    with open(counts_file, 'w') as output_counts:
+        for line in lines:
+            if line.startswith('>'):
+                name = line[1:].strip()
+                if name not in polytomy_children_names:
+                    output_counts.write(line)
+            else:
+                if name not in polytomy_children_names:
+                    output_counts.write(line)
+
+
+def fitch(tree_file, counts_file=False, mlar_tree=True):
+    """
+    calculates the maximum parsimony score following Fitch algorithm, where the states are chromosome counts.
+    :param tree_file: MLAncestralReconstruction or original tree file
+    :param counts: counts file (needed if simulated, or if original tree is used)
+    :param mlar_tree: True if MLAncestralReconstruction tree is used, False if original tree is used
+    :return: number of unions (parsimony score)
+    """
+    try:
+        t = Tree(tree_file, format=1)
+        score = 0
+        if counts_file:
+            d = create_counts_hash(counts_file)
+
+        for node in t.traverse("postorder"):
+            if not node.is_leaf():  # internal node
+                lst = []  # list version
+                for child in node.get_children():
+                    if child.is_leaf():  # if the child is a tip - parse number from tip label or counts file
+                        if mlar_tree:
+                            if counts_file:  # dictionary exists if the tree is simulated --> take the number from it
+                                name = re.search("(.*)\-\d+", child.name)
+                                if name:
+                                    num = {int(d.get(name.group(1)))}
+                            else:  # calculation on original counts
+                                 num = {regex_tip(child.name)}
+                        else:
+                            num = {int(d.get(child.name))} 
+                    else:  # if the child is an internal node - take number
+                        num = child.name
+                    lst.append(num)
+                intersect = set.intersection(*lst)
+                union = set.union(*lst)
+                if len(intersect) == 0:
+                    result = union
+                    score += 1
+                else:
+                    result = intersect
+                node.name = result
+    except Exception as ex:
+        print(f"Exception: {ex}. Unable to calculate parsimony score")
+        score = None
+    return score
 
