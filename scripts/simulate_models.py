@@ -32,10 +32,9 @@ def main(args):
             pass
 
     manipulations_on = {'poly':['demiPloidyR', 'dupl', 'baseNumR'], 'dys':['gain', 'loss'],
-                        'all':['demiPloidyR', 'dupl', 'baseNumR', 'gain', 'loss'], None:None}#
+                        'all':['demiPloidyR', 'dupl', 'baseNumR', 'gain', 'loss'], None:None}
     tree_path = os.path.join(in_dir, 'tree.newick')
-    counts_path = os.path.join(in_dir, 'counts.fasta')
-    expectation_file_path = os.path.join(other_dir, 'expectations_second_round.txt')#
+    expectation_file_path = os.path.join(other_dir, 'expectations_second_round.txt')
 
     for sampling_frac in sampling_fractions:
 
@@ -73,7 +72,8 @@ def main(args):
                 
                 other_kwargs['multiplier'] = multiplier
                 other_kwargs['manipulated_rates'] = manipulations_on[manipulation_model]
-                utl.paramio(mult_manupulation_dir, job_name, counts_path, new_tree_path) \
+                # important: in sim mode dataFile is NOT counts_path, but final output dir!
+                utl.paramio(mult_manupulation_dir, job_name, mult_manupulation_dir, new_tree_path) \
                     .set_simulated(in_dir, num_of_simulations, **other_kwargs).output()
 
                 utl.do_job(mult_manupulation_dir, job_name, mem=10, ncpu=1, exe=CHROMEVOL_SIM_EXE, standalone=standalone)
@@ -94,5 +94,5 @@ if __name__ == '__main__':
     main(parser.parse_args())
 
 # standalone example:
-# python simulate_models.py -n 5 -i "/groups/itay_mayrose/ronenshtein/chrevodata/test2/Trees/family/phrymaceae/Homogenous/" -k 1
-# -o "/groups/itay_mayrose/ronenshtein/chrevodata/test2/Trees/family/phrymaceae/Homogenous/" --standalone -r all 
+# python simulate_models.py -n 20 -i "/groups/itay_mayrose/ronenshtein/chrevodata/test2/Trees/family/phrymaceae/Homogenous/" -k 1
+# -o "/groups/itay_mayrose/ronenshtein/chrevodata/test2/Trees/family/phrymaceae/Homogenous/" --standalone 

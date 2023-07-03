@@ -111,11 +111,11 @@ class paramio:
         res_content = res_file.read()
         res_file.close()
         
-        self.minChrNum = str(get_min_chromosome_number(res_content))
-        self.maxChrNum = str(MAX_CHR_NUM)
-        self.maxChrInferred = str(get_max_chromosome_number(res_content))
-        self.branchMul = str(get_tree_scaling_factor(res_content))
         self.fixedFrequenciesFilePath = freq_file_path
+        self.minChrNum = str(get_min_chromosome_number(res_content))
+        self.maxChrInferred = str(get_max_chromosome_number(res_content))
+        self.maxChrNum = str(MAX_CHR_NUM)
+        self.branchMul = str(get_tree_scaling_factor(res_content))
         if heterogeneous:
             self.heterogeneousModel = 'true'
             self.nodeIdsFilePath = str(nodes_file_path)
@@ -138,38 +138,41 @@ class paramio:
         pattern_params = re.compile('Chromosome\.([\D]+)([\d]*)_([\d]+)[\s]+=[\s]+([\S]+)')
         section = pattern_section.findall(res_content)[0][0]
         params_index_models = pattern_params.findall(section)
-        rate_parameter_dict = {}
+        rate_param_dict = {}
         # structure is { model: [ {param:[(index, value)]} ] }
         # where category is the param's index in the list of param dictionaries
-        for rate_param, index_str, model_str, value_str in  params_index_models:
+        for param, index, model, value in  params_index_models:
 
-            model_entries = rate_parameter_dict.setdefault(model_str, [])
-            existing_entry = next((e for e in model_entries if rate_param in e), None)
+            if param == 'demi': # ChromEvol expects 'demiPloidyR' instead of 'demi' in params file!
+                param = 'demiPloidyR'
+
+            model_entries = rate_param_dict.setdefault(model, [])
+            existing_entry = next((e for e in model_entries if param in e), None)
             if existing_entry:
-                existing_entry[rate_param].extend( [(index_str, value_str)] )
+                existing_entry[param].extend( [(index, value)] )
             else:
-                model_entries.append({ rate_param: [(index_str, value_str)] })
+                model_entries.append({ param: [(index, value)] })
 
-        return rate_parameter_dict
+        return rate_param_dict
 
-    def _write_rate_params(self, rate_parameter_dict, multiplier=None, manipulated_rates=None):
+    def _write_rate_params(self, rate_param_dict, multiplier=None, manipulated_rates=None):
 
         func_conversion_dic = {'dupl':'duplFunc', 'demiPloidyR':'demiDuplFunc',
                                'gain':'gainFunc', 'loss':'lossFunc', 'baseNumR':'baseNumRFunc'}
         multiplier = [1] + [multiplier] if multiplier else [1]
         counter = 0
         for k in multiplier:
-            for model, param_list in rate_parameter_dict.items():
+            for model, param_list in rate_param_dict.items():
                 for category, param_dict in enumerate(param_list):
                     for key, val in param_dict.items():
                         # index is ignored for now
                         param = key + '_' + str(int(model)+counter)
-                        setting = str(category) + ';' + val[0][1]
+                        setting = str(category+1) + ';' + val[0][1]
                         if manipulated_rates is not None and key in manipulated_rates:
                             func = vars(self)[func_conversion_dic[key]]
                             if (func == 'LINEAR') or (func == 'CONST') or ((func == 'EXP') and (val[0][0] == 0)):
                                 # val[0][0] is the index, not sure why it's compared to 0
-                                setting = str(category) + ';' + str(float(val[0][1])*k)
+                                setting = str(category+1) + ';' + str(float(val[0][1])*k)
                         setattr(self, param, setting)
             counter += 1
 
@@ -189,17 +192,17 @@ class paramio:
         self.fracAllowedFailedSimulations = 0.1
         self.numOfRequiredSimulatedData = str(num_of_simulations)
 
-        rate_parameter_dict = self._read_res_model(content)
-
-        self._write_rate_params(rate_parameter_dict, multiplier, manipulated_rates)
+        rate_param_dict = self._read_res_model(content)
+        self._write_rate_params(rate_param_dict, multiplier, manipulated_rates)
         
         # note that the sequence at which parameters are set is important in this function!
         ml_tree = os.path.join(chromevol_res_dir, 'MLAncestralReconstruction.tree')
         max_base_num = 0
         if hasattr(self, 'baseNumRFunc') and self.baseNumRFunc != 'IGNORE':
             max_base_num = max([int(_.split(';')[1]) for var, _ in vars(self).items() if var.startswith('baseNum_')])
-        # dataFile is counts_path
-        self.maxBaseNumTransition = max(test_max_on_tree(self.dataFile, ml_tree), max_base_num+1)
+        # important: in sim mode dataFile is NOT counts_path, but final output dir!
+        counts_path = os.path.join(chromevol_res_dir, 'counts.fasta')
+        self.maxBaseNumTransition = max(test_max_on_tree(counts_path, ml_tree), max_base_num+1)
         #
         # Ask Anat about the counts bug, and the logic of test_max_on_tree returning 0 conditional !!!
         # Also, ask if the multiplier syntax output makes sense, what happens if model number and mult overlap,
