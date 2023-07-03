@@ -12,9 +12,9 @@ def split_test_train(df, outer_col, inner_col, bins, train_split):
     df_sorted = df[df['selected'] == 'Test'].sort_values(outer_col)
     df_false_rows = df[df['selected'] == 'False']
 
+    bins = min(len(df_sorted), bins)
     bin_size = len(df_sorted) // bins
-    k = int( bin_size * train_split ) # number of rows to be selected from each bin
-    k = 1 if k == 0 else k
+    k = min(1, int(bin_size * train_split)) # number of rows to be selected from each bin
     modified_indices = []
 
     for i in range(bins):

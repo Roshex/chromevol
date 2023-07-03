@@ -92,3 +92,7 @@ if __name__ == '__main__':
     parser.add_argument('--standalone', action='store_true', default=False, help='use standalone flag to generate job file')
     
     main(parser.parse_args())
+
+# standalone example:
+# python simulate_models.py -n 5 -i "/groups/itay_mayrose/ronenshtein/chrevodata/test2/Trees/family/phrymaceae/Homogenous/" -k 1
+# -o "/groups/itay_mayrose/ronenshtein/chrevodata/test2/Trees/family/phrymaceae/Homogenous/" --standalone -r all 

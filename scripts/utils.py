@@ -343,7 +343,8 @@ module load {module}
 
 
 def get_cmd(path, name, sim_num, model, mode):
-    sim_out = os.path.join(path, mode)
+    sim_in = os.path.join(path, mode)
+    sim_out = os.path.join(sim_in, 'Sims/')
     tree_path = os.path.join(sim_out, name+'.newick')
     inf_on_sim_out = os.path.join(sim_out, 'Infer_on_sims')
 
@@ -354,7 +355,7 @@ def get_cmd(path, name, sim_num, model, mode):
 
     return f'''\
 python {ie_path} -i {path} -o {path} -m {model} -d {mode}
-python {sm_path} -i {sim_out} -o {sim_out} -n {sim_num}
+python {sm_path} -i {sim_in} -o {sim_out} -n {sim_num}
 python {is_path} -i {sim_out} -t {tree_path} -m {model} -o {inf_on_sim_out} -r {sim_num}
 '''
 
