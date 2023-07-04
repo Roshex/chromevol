@@ -29,7 +29,7 @@ def main(args):
                 utl.paramio(inf_dir, 'emp_'+name, counts_file, tree_file).set_empirical(model=model).output()
                 shutil.copy(tree_file, inf_dir) # must be done after paramio (otherwise, no such folder)
                 shutil.copy(counts_file, inf_dir)
-                utl.do_job(inf_dir, 'emp_'+name, standalone=standalone)
+                utl.do_chevol_cmd(inf_dir, 'emp_'+name, standalone=standalone)
 
             if mode == 'Heterogenous' or mode == 'Both':
                 inf_dir = os.path.join(out_dir, 'Heterogenous')
@@ -37,7 +37,7 @@ def main(args):
                     taxa_num=taxa, max_number_of_models=10).output()
                 shutil.copy(tree_file, inf_dir) # must be done after paramio (otherwise, no such folder)
                 shutil.copy(counts_file, inf_dir)
-                utl.do_job(inf_dir, 'emp_'+name, ncpu=req, mem=int(req*memcpu_ratio), standalone=standalone)
+                utl.do_chevol_cmd(inf_dir, 'emp_'+name, standalone=standalone, ncpu=req, mem=int(req*memcpu_ratio))
 
 if __name__ == '__main__':
 

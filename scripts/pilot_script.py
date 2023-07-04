@@ -1,3 +1,4 @@
+from ast import Try
 import os
 import argparse
 import numpy as np
@@ -58,7 +59,6 @@ def main(args):
     
         # create the DataFrame
         out_dir = os.path.join(args.out_dir, 'Results_' + utl.get_time())
-        taxa_df = pd.DataFrame(columns=["name", "type", "taxa", "poly", "min", "max", "std", "mean", "median", "unique", "scaling", "MP", "path", "selected"])
         taxa_list = []
     
         for root, dirs, files in os.walk(trees_dir):
@@ -70,7 +70,10 @@ def main(args):
                 if file.endswith('.newick'):
                     tree_file = os.path.join(root, file)
                     counts_file = os.path.join(root, 'counts.fasta')
-                    utl.remove_root_polytomies(tree_file, counts_file)
+                    try:
+                        utl.remove_root_polytomies(tree_file, counts_file)
+                    except:
+                        continue # skip bad tree files
     
                     tree = Tree(tree_file)
                     counts = utl.get_counts(counts_file)
@@ -79,49 +82,39 @@ def main(args):
                     variation = np.std(counts)
                     unique = np.unique(counts)
                     name = os.path.basename(root)
+                    tree_length = utl.get_tree_length(tree)
                     
-                    if "family" in root.lower():
-                        entry_type = "family"
-                    elif "genus" in root.lower():
-                        entry_type = "genus"
+                    if 'family' in root.lower():
+                        entry_type = 'family'
+                    elif 'genus' in root.lower():
+                        entry_type = 'genus'
                     else:
-                        entry_type = ""
+                        entry_type = ''
     
                     taxa_list.append( {
-                        "name": name,
-                        "type": entry_type,
-                        "taxa": taxa,
-                        "poly": polytomy_ratio,
-                        "min": np.min(counts),
-                        "max": np.max(counts),
-                        "std": variation,
-                        "mean": np.mean(counts),
-                        "median": np.median(counts),
-                        "unique": np.unique(counts),
-                        "scaling": len(unique)/utl.get_tree_length(tree),
-                        "MP": utl.fitch(tree_file, counts_file=counts_file, mlar_tree=False),
-                        "path": root,
-                        "selected": "Test" if (polytomy_ratio <= max_polytomy and taxa >= min_taxa and variation > 0) else "False"
+                        'name': name,
+                        'type': entry_type,
+                        'taxa': taxa,
+                        'poly': polytomy_ratio,
+                        'min': np.min(counts),
+                        'max': np.max(counts),
+                        'std': variation,
+                        'mean': np.mean(counts),
+                        'median': np.median(counts),
+                        'anomaly': utl.anomaly_score(counts),
+                        'symmetry': utl.symmetry_score(tree),
+                        'colless': utl.colless_index(tree),
+                        'diversity': len(unique)/taxa,
+                        'count_stats': utl.get_stats(counts), # skewness, kurtosis, MAD, signal
+                        'branch_stats': utl.get_stats(utl.get_branch_lengths(tree)),
+                        'scaling': len(unique)/tree_length,
+                        'MP': utl.fitch(tree_file, counts_file=counts_file, mlar_tree=False),
+                        'path': root,
+                        'selected': 'Test' if (polytomy_ratio <= max_polytomy and taxa >= min_taxa and variation > 0) else 'False'
                     } )
     
-                    '''
-                    mlar_tree = utl.get_mlar_tree(tree, counts_file)
-    
-                    total_length, average_length = utl.get_tree_lengths(tree)
-    
-                    _, _, transitions, total_nodes = utl.count_transitions(mlar_tree)
-                    cum_diff = utl.cumulative_diff(mlar_tree)
-    
-                    variability = np.std(counts) / np.mean(counts)
-                    variance = np.var(counts)
-                    diversity = np.unique(counts) / taxa
-                    proportional_changes = transitions / total_nodes
-                    ratiiiooo = cum_diff / total_length
-    
-                    '''
-    
-        # concatenate the dictionaries into a DataFrame
-        taxa_df = pd.concat([taxa_df, pd.DataFrame(taxa_list)])
+        # turn the dictionary into a DataFrame
+        taxa_df = pd.DataFrame(taxa_list)
         taxa_df.reset_index(drop=True, inplace=True)
     
         # decide on the train set
@@ -130,7 +123,8 @@ def main(args):
         # save the DataFrame to a csv file
         if not os.path.exists(out_dir):
             os.makedirs(out_dir)
-        taxa_df.to_csv(os.path.join(out_dir, 'data_summary.csv'), index=False)
+        data_path = os.path.join(out_dir, 'data_summary.csv')
+        taxa_df.to_csv(data_path, index=False)
     
         plt.hist(taxa_df['taxa'], bins=10, edgecolor='black') # set bins LATER
         plt.xlabel('Number of taxa')
@@ -145,9 +139,8 @@ def main(args):
 
             req = floor(1+int(row['taxa'])/100)*req_multiplier
             
-            cmd = utl.get_cmd(path=row['path'], sim_num=sim_num, model=model, mode='Homogenous')
-
-            utl.do_job(path=row['path'], name=row['name'], ncpu=req, mem=int(req*memcpu_ratio), cmd=cmd)
+            utl.do_pilot_cmd(path=row['path'], name=row['name'], sim_num=sim_num, model=model, mode='Homogenous',\
+               data=data_path, ncpu=req, mem=int(req*memcpu_ratio))
             
 if __name__ == '__main__':
 

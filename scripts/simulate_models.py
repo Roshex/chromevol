@@ -74,7 +74,7 @@ def main(args):
                 utl.paramio(mult_manupulation_dir, job_name, mult_manupulation_dir, new_tree_path) \
                     .set_simulated(in_dir, num_of_simulations, **other_kwargs).output()
 
-                utl.do_job(mult_manupulation_dir, job_name, mem=10, ncpu=1, exe=CHROMEVOL_SIM_EXE, standalone=standalone)
+                utl.do_chevol_cmd(mult_manupulation_dir, job_name, exe=CHROMEVOL_SIM_EXE, standalone=standalone, mem=10, ncpu=1)
 
 if __name__ == '__main__':
 

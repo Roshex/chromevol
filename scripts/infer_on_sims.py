@@ -26,6 +26,7 @@ def main(args):
             random.seed(seed)
         rng = random.sample(rng, randomize)
 
+    output_dirs = []
     for _ in rng:
         sim_dir = os.path.join(sims_dir, str(_))
         counts_path = os.path.join(sim_dir, 'counts.fasta')
@@ -46,8 +47,13 @@ def main(args):
         utl.paramio(het_dir, 'emp_'+het_str, counts_path, tree_path).set_empirical(model=model, heterogenous=True, \
             taxa_num=taxa, min_clade_size=min_clade, max_number_of_models=10).output()
 
-        utl.do_job(hom_dir, 'emp_'+hom_str, standalone=standalone)
-        utl.do_job(het_dir, 'emp_'+het_str, ncpu=req, mem=int(req*memcpu_ratio), standalone=standalone)
+        utl.do_chevol_cmd(hom_dir, 'emp_'+hom_str, standalone=standalone)
+        utl.do_chevol_cmd(het_dir, 'emp_'+het_str, standalone=standalone, ncpu=req, mem=int(req*memcpu_ratio))
+
+        output_dirs.extend([hom_dir, het_dir])
+    # only write expected outputs file if all jobs were submitted
+    if len(output_dirs) == 2*len(rng):
+        utl.write_expected_outputs(out_dir, output_dirs)
 
 if __name__ == '__main__':
 

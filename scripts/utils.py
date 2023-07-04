@@ -1,11 +1,19 @@
-from ete3 import Tree
 import re
 import os
 import time
+import math
 import random
 import datetime
-from subprocess import Popen
+import numpy as np
+import xgboost as xgb
+import scipy.stats as stt
+import statsmodels.api as sm
 from os.path import join as opj
+from ete3 import Tree
+from subprocess import Popen
+from itertools import combinations
+from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import cross_val_score
 from defs import *
 
 
@@ -224,79 +232,6 @@ class paramio:
 
 
 #################################################################
-# Function I/O                                                  #
-#################################################################
-
-
-def get_functions_settings(res_content):
-    '''
-    extracts the functions set for each transition rate
-    :param res_content: chromEvol results file content (chromEvol.res(=)
-    :return: list of functions settings
-    '''
-    max_num_of_functions = 5
-    dict_of_functions = {}
-    pattern_section = re.compile('Assigned functions for each rate parameter:[\s]+(.*)?#', re.DOTALL)
-    pattern_functions = re.compile('([\S]+):[\s]+([\S]+)')
-    section = pattern_section.findall(res_content)[0]
-    functions_raw = pattern_functions.findall(section)
-    dict_functions = {'baseNumR': 'baseNumRFunc', 'dupl': 'duplFunc',
-                      'demi': 'demiDuplFunc', 'gain': 'gainFunc', 'loss': 'lossFunc'}
-    for i in range(min(max_num_of_functions, len(functions_raw))):
-        transition_type, function = functions_raw[i]
-        if transition_type in dict_functions:
-            dict_of_functions[dict_functions[transition_type]] = function
-    return dict_of_functions
-
-
-def get_functions(model):
-    dict_func_as_params = {}
-    pattern = re.compile('([a-z]+)\+([A-Z]+)')
-    dict_functions_names = {'g':'gainFunc', 'l':'lossFunc', 'du':'duplFunc', 'de':'demiDuplFunc', 'b':'baseNumRFunc'}
-    dict_fucntions_defs = {'L':'LINEAR', 'C':'CONST', 'E':'EXP', 'I':'IGNORE'}
-    rate_and_func = pattern.findall(model)
-    for abb_rate, abb_func in rate_and_func:
-        dict_func_as_params[dict_functions_names[abb_rate]] = dict_fucntions_defs[abb_func]
-    return dict_func_as_params
-
-
-def get_default_parameters(func):
-    if func == 'CONST':
-        param = '2'
-    elif func == 'LINEAR':
-        param = '2,0.1'
-    elif func == 'EXP':
-        param = '2,0.01'
-    else:
-        raise Exception('get_default_parameters(): Not implemented yet!!')
-    return param
-
-
-def write_general_params(parameters):
-    content = ''
-    for param in parameters:
-        content += param + ' = '+ str(parameters[param]) + '\n'
-    return content
-
-
-def write_rate_parameters(rate_parameters):
-    content = ''
-    category = 1
-    for model in rate_parameters:
-        for param in rate_parameters[model]:
-            content += '_'+param+'_'+ str(model)+' = '+ str(category)+';'
-            for i in range(len(rate_parameters[model][param])):
-                value = rate_parameters[model][param][i][1]
-                if i != len(rate_parameters[model][param])-1:
-                    content += str(value)+','
-                else:
-                    content += str(value)+'\n'
-            category += 1
-    return content
-
-
-
-#################################################################
 # File Management                                               #
 #################################################################
 
@@ -307,35 +242,115 @@ def get_nth_parent(root, n):
     return os.path.basename(root)
 
 
-def check_output(path, name='out.txt', flag='Total running time is:'):
-    path = opj(path, name)
-    if os.path.isfile(path):
+def write_expected_outputs(path, output_dirs, name=None, flag=None):
+    cats = { 'paths': output_dirs, 'name': name, 'flag': flag }
+    path = opj(path, 'expected_outputs.txt')
+    with open(path, 'w') as f:
+        for cat, val in cats.items():
+            if val is not None:
+                f.write(f'>{cat}\n')
+                val = '\n'.join(val) + '\n' if isinstance(val, list) else f'{val}\n'
+                f.write(val)
+
+
+def parse_expected_outputs(path):
+    outputs = {'paths': []}
+    current_cat = 'paths'
+    path = opj(path, 'expected_outputs.txt')
+    try:
         with open(path, 'r') as f:
-            content = f.read()
-            if flag in content:
-                return True
-    return False
+            for line in f:
+                line = line.strip()
+                if line.startswith('>'):
+                    current_cat = line[1:]
+                    outputs[current_cat] = []
+                    continue
+                outputs[current_cat].append(line)
+    except (FileNotFoundError, IOError):
+        return None
+    return outputs
+
+
+def check_output(path, name='out.txt', flag='Total running time is:', config=False, notif1='checking', notif2='Outputs found'):
+
+    if config:
+        print(f'{notif1}: expected_outputs.txt')
+        outputs = parse_expected_outputs(path)
+        if outputs is None:
+            print('file does not exist yet')
+            return False
+        paths = outputs['paths']
+        name = outputs['name'] if 'name' in outputs else name
+        flag = outputs['flag'] if 'flag' in outputs else flag
+    else:
+        paths = [path]
+
+    for p in paths:
+        p = opj(p, name)
+        print(f'{notif1}: {p}')
+        if os.path.isfile(p):
+            with open(p, 'r') as f:
+                content = f.read()
+                if flag not in content:
+                    print('file is yet to be completed')
+                    return False
+        else:
+            print('file does not exist yet')
+            return False
+    print(f'{notif2}: {len(paths)}')
+    return True
 
 
 def wait_for_output(path, **kwargs):
     while not check_output(path, **kwargs):
-        # wait one minute
-        time.sleep(60)
+        # wait half a minute
+        time.sleep(30)
+    
+
+def concat_paths(path, mode='Homogenous'):
+    emp_out = opj(path, mode)
+    sim_out = opj(emp_out, 'Sims/')
+    inf_out = opj(sim_out, 'Infer_on_sims')
+    return emp_out, sim_out, inf_out
 
 
-def do_job(path, name, mem=4, ncpu=1, exe=CHROMEVOL_EMP_EXE, queue=QUEUE, standalone=False, cmd=None):
+def do_pilot_cmd(path, name, sim_num, model, mode, data, **kwargs):
+    cwd = os.getcwd()
+    emp_out, sim_out, inf_out = concat_paths(path, mode)
+    scripts = [
+        {'call': f'{opj(cwd, "infer_empirical.py")} -i {path} -o {path} -m {model} -d {mode}', 'output': emp_out, 'config': False},
+        {'call': f'{opj(cwd, "simulate_models.py")} -i {emp_out} -o {sim_out} -n {sim_num}', 'output': sim_out, 'config': False},
+        {'call': f'{opj(cwd, "infer_on_sims.py")} -i {sim_out} -t {opj(emp_out, "tree.newick")} -m {model} -o {inf_out} -r {sim_num}', 'output': inf_out, 'config': True},
+        #{'call': f'{opj(cwd, "get_features.py")} -e {path} -s {sim_out} -i {inf_out} -d {data} -n {sim_num}', 'output': cwd, 'config': False},
+        {'call': f'{opj(cwd, "hello.py")}', 'output': cwd, 'config': False}
+    ]
 
-    if cmd==None:
-        param_path = opj(path, f'{name}.params')
-        cmd = f'{exe} param={param_path} > {opj(path, "out.txt")} 2> {opj(path, "err.txt")}\n'
+    cmd = ''
+    for script in scripts:
+        if not check_output(script['output'], config=script['config']):
+            cmd += f'python {script["call"]}\n'
+    
+    send_job(path, name, cmd, **kwargs)
+
+
+def do_chevol_cmd(path, name, exe=CHROMEVOL_EMP_EXE, standalone=False, **kwargs):
+
+    param_path = opj(path, f'{name}.params')
+    cmd = f'{exe} param={param_path} > {opj(path, "out.txt")} 2> {opj(path, "err.txt")}\n'
         
-        if not standalone:
+    if standalone:
+        send_job(path, name, cmd, **kwargs)
+    else:
+        if check_output(path):
+            return # already done
+        else:
             print(f'running: {param_path}')
             os.system(cmd)
-            return wait_for_output(path)
-        # else standalone is True
-    # else cmd was given
-    
+            return wait_for_output(path, notif1='waiting', notif2='Done waiting')
+
+
+def send_job(path, name, cmd, mem=4, ncpu=1, queue=QUEUE):
+
     if not os.path.exists(path):
         os.makedirs(path)
 
@@ -363,47 +378,6 @@ module load {module}
     with open(job_path, 'w') as file:
         file.write(text)
     Popen(['qsub', job_path])
-
-
-def get_cmd(path, sim_num, model, mode):
-
-    cwd = os.getcwd()
-    ie_path = opj(cwd, 'infer_empirical.py')
-    sm_path = opj(cwd, 'simulate_models.py')
-    is_path = opj(cwd, 'infer_on_sims.py')
-    
-    cmd = ''
-    emp_out = opj(path, mode)
-    if not check_output(emp_out):
-        cmd += f'python {ie_path} -i {path} -o {path} -m {model} -d {mode}\n'
-    sim_out = opj(emp_out, 'Sims/')
-    if not check_output(sim_out):
-        cmd += f'python {sm_path} -i {emp_out} -o {sim_out} -n {sim_num}\n'
-    tree_path = opj(emp_out, 'tree.newick')
-    inf_on_sim_out = opj(sim_out, 'Infer_on_sims')
-    cmd += f'python {is_path} -i {sim_out} -t {tree_path} -m {model} -o {inf_on_sim_out} -r {sim_num}\n'
-    
-    return cmd
-
-
-'''
-def get_cmd(path, sim_num, model, mode):
-    sim_in = os.path.join(path, mode)
-    sim_out = os.path.join(sim_in, 'Sims/')
-    tree_path = os.path.join(sim_in, 'tree.newick')
-    inf_on_sim_out = os.path.join(sim_out, 'Infer_on_sims')
-
-    cwd = os.getcwd()
-    ie_path = os.path.join(cwd, 'infer_empirical.py')
-    sm_path = os.path.join(cwd, 'simulate_models.py')
-    is_path = os.path.join(cwd, 'infer_on_sims.py')
-
-    return f"""\
-python {ie_path} -i {path} -o {path} -m {model} -d {mode}
-python {sm_path} -i {sim_in} -o {sim_out} -n {sim_num}
-python {is_path} -i {sim_out} -t {tree_path} -m {model} -o {inf_on_sim_out} -r {sim_num}
-"""
-'''
 
 
 def create_nodes_split_file(nodes_file_path, sampling_frac, tree_path):
@@ -489,6 +463,88 @@ def get_max_chromosome_number(res_content, file_handler=None):
     pattern_max_chr_num = re.compile('Max allowed chromosome number[\s]+=[\s]+([\d]+)')
     max_chr_num = int(pattern_max_chr_num.findall(res_content)[0])
     return max_chr_num
+
+
+
+#################################################################
+# Function I/O                                                  #
+#################################################################
+
+
+def get_functions_settings(res_content):
+    '''
+    extracts the functions set for each transition rate
+    :param res_content: chromEvol results file content (chromEvol.res(=)
+    :return: list of functions settings
+    '''
+    max_num_of_functions = 5
+    dict_of_functions = {}
+    pattern_section = re.compile('Assigned functions for each rate parameter:[\s]+(.*)?#', re.DOTALL)
+    pattern_functions = re.compile('([\S]+):[\s]+([\S]+)')
+    section = pattern_section.findall(res_content)[0]
+    functions_raw = pattern_functions.findall(section)
+    dict_functions = {'baseNumR': 'baseNumRFunc', 'dupl': 'duplFunc',
+                      'demi': 'demiDuplFunc', 'gain': 'gainFunc', 'loss': 'lossFunc'}
+    for i in range(min(max_num_of_functions, len(functions_raw))):
+        transition_type, function = functions_raw[i]
+        if transition_type in dict_functions:
+            dict_of_functions[dict_functions[transition_type]] = function
+    return dict_of_functions
+
+
+def get_functions(model):
+    dict_func_as_params = {}
+    pattern = re.compile('([a-z]+)\+([A-Z]+)')
+    dict_functions_names = {'g':'gainFunc', 'l':'lossFunc', 'du':'duplFunc', 'de':'demiDuplFunc', 'b':'baseNumRFunc'}
+    dict_fucntions_defs = {'L':'LINEAR', 'C':'CONST', 'E':'EXP', 'I':'IGNORE'}
+    rate_and_func = pattern.findall(model)
+    for abb_rate, abb_func in rate_and_func:
+        dict_func_as_params[dict_functions_names[abb_rate]] = dict_fucntions_defs[abb_func]
+    return dict_func_as_params
+
+
+def get_default_parameters(func):
+    if func == 'CONST':
+        param = '2'
+    elif func == 'LINEAR':
+        param = '2,0.1'
+    elif func == 'EXP':
+        param = '2,0.01'
+    else:
+        raise Exception('get_default_parameters(): Not implemented yet!!')
+    return param
+
+
+def write_general_params(parameters):
+    content = ''
+    for param in parameters:
+        content += param + ' = '+ str(parameters[param]) + '\n'
+    return content
+
+
+def write_rate_parameters(rate_parameters):
+    content = ''
+    category = 1
+    for model in rate_parameters:
+        for param in rate_parameters[model]:
+            content += '_'+param+'_'+ str(model)+' = '+ str(category)+';'
+            for i in range(len(rate_parameters[model][param])):
+                value = rate_parameters[model][param][i][1]
+                if i != len(rate_parameters[model][param])-1:
+                    content += str(value)+','
+                else:
+                    content += str(value)+'\n'
+            category += 1
+    return content
+
+
+def extract_score(res_dir, string):
+    # read chromEvol.res file and regex it
+    match = None
+    with open(os.path.join(res_dir, 'chromEvol.res'), 'r') as f:
+        text = f.read()
+        match = re.search(string, text)
+    return match.group(1) if match else 'none' # convert to float?
 
 
 
@@ -707,26 +763,6 @@ def count_polytomy(tree, n):
     return polytomy_ratio
 
 
-def create_counts_hash(counts_file):
-    """
-    puts all counts from a counts file in a dictionary: taxa_name: count. Taxa with an X count are skipped.
-    If there are counts that are X the function returns two hashes and a set of the taxa to prune.
-    :param counts_file in FASTA format
-    :return:(2) dictionary of counts
-    """
-    d = {}
-    with open(counts_file, "r") as counts_handler:
-        for line in counts_handler:
-            line = line.strip()
-            if line.startswith('>'):  # taxon name
-                name = line[1:]
-            else:
-                if line != "x":
-                    num = int(line)
-                    d[name] = num
-    return d
-
-
 def remove_root_polytomies(tree_file, counts_file, mx=2):
 
     # remove root leaves if over 2
@@ -753,6 +789,26 @@ def remove_root_polytomies(tree_file, counts_file, mx=2):
             else:
                 if name not in polytomy_children_names:
                     output_counts.write(line)
+
+
+def create_counts_hash(counts_file):
+    """
+    puts all counts from a counts file in a dictionary: taxa_name: count. Taxa with an X count are skipped.
+    If there are counts that are X the function returns two hashes and a set of the taxa to prune.
+    :param counts_file in FASTA format
+    :return:(2) dictionary of counts
+    """
+    d = {}
+    with open(counts_file, "r") as counts_handler:
+        for line in counts_handler:
+            line = line.strip()
+            if line.startswith('>'):  # taxon name
+                name = line[1:]
+            else:
+                if line != "x":
+                    num = int(line)
+                    d[name] = num
+    return d
 
 
 def fitch(tree_file, counts_file=False, mlar_tree=True):
@@ -798,3 +854,203 @@ def fitch(tree_file, counts_file=False, mlar_tree=True):
         print(f"Exception: {ex}. Unable to calculate parsimony score")
         score = None
     return score
+
+
+def symmetry_score(tree, topology_only=False):
+    max_leaf_distances = []
+    internal_nodes = 0
+
+    for node in tree.traverse():
+        if not node.is_leaf() and not node.is_root():
+            max_distance = 0
+            for leaf in node.iter_leaves():
+                distance = node.get_distance(leaf, topology_only=topology_only)
+                if distance > max_distance:
+                    max_distance = distance
+            max_leaf_distances.append(max_distance)
+            internal_nodes += 1
+
+    if internal_nodes > 0:
+        average_max_distance = sum(max_leaf_distances) / internal_nodes
+        symmetry_score = 1.0 / average_max_distance
+        return symmetry_score
+    else:
+        return 0.0
+
+
+def colless_index(node):
+    if node.is_leaf():
+        return 0
+    colless_index_sum = 0
+    child_pairs = combinations(node.children, 2)
+    for pair in child_pairs:
+        left = pair[0].get_leaf_names()
+        right = pair[1].get_leaf_names()
+        colless_index_sum += abs(len(left) - len(right))
+    return colless_index_sum + sum(colless_index(child) for child in node.children)
+
+
+def anomaly_score(counts):
+    # calculate the interquartile range (IQR)
+    q1 = np.percentile(counts, 25)
+    q3 = np.percentile(counts, 75)
+    iqr = q3 - q1
+
+    # find anomalies outside the upper and lower limits
+    upper_limit = q3 + (1.5 * iqr)
+    lower_limit = q1 - (1.5 * iqr)
+    anomalies = [chromosome for chromosome in counts if chromosome > upper_limit or chromosome < lower_limit]
+
+    return sum(anomalies)/sum(counts)
+
+
+def get_branch_lengths(tree):
+    return [node.dist for node in tree.iter_descendants()]
+
+
+def get_stats(v):
+    # skewness, kurtosis, MAD, signal
+    return stt.skew(v), stt.kurtosis(v), np.mean(np.abs(v - np.median(v))), sm.OLS(v, sm.add_constant(range(len(v)))).fit().rsquared
+
+
+
+#################################################################
+# Labeled Tree Features                                         #
+#################################################################
+
+
+def extract_chrom(node):
+    return int(re.search(".*\-(\d+)", node.name).group(1))
+
+
+def count_transitions(mlar_tree):
+    gains = 0
+    losses = 0
+    duples = 0
+    demis = 0
+    internal_nodes = 0
+    for node in mlar_tree.traverse():
+        if not node.is_leaf() and node.up:
+            parent_chrom = extract_chrom(node.up)
+            child_chrom = extract_chrom(node)
+            if parent_chrom - child_chrom == 1:
+                gains += 1
+            elif parent_chrom - child_chrom == -1:
+                losses += 1
+            elif 2*parent_chrom == child_chrom:
+                duples += 1
+            else:
+                demis += 1
+            internal_nodes += 1
+    return gains/internal_nodes, losses/internal_nodes, duples/internal_nodes, demis/internal_nodes
+
+
+def chromosome_branch_correlation(mlar_tree):
+    chromosome_traits = []
+    branch_lengths = []
+    cumulative_diff = 0
+    for node in mlar_tree.traverse():
+        if node.up:
+            parent_num = extract_chrom(node.up)
+            difference = extract_chrom(node) - parent_num
+            chromosome_trait = (difference) / parent_num
+            chromosome_traits.append(chromosome_trait)
+            branch_length = node.dist
+            branch_lengths.append(branch_length)
+            cumulative_diff += abs(difference)
+
+    correlation = np.corrcoef(chromosome_traits, branch_lengths)[0, 1]
+
+    model = sm.OLS(branch_lengths, sm.add_constant(chromosome_traits))
+    results = model.fit()
+    regression_coefficients = results.params[1]
+
+    mean_interaction = np.mean(np.multiply(chromosome_traits, branch_lengths))
+
+    return cumulative_diff, correlation, regression_coefficients, mean_interaction
+
+
+def get_entropy(mlar_tree):
+    entropy = 0.0
+    total_internal_nodes = 0
+    node_counts = {}
+    for node in mlar_tree.traverse():
+        if not node.is_leaf():
+            total_internal_nodes += 1
+            child_counts = [extract_chrom(child) for child in node.get_leaves()]
+            for count in child_counts:
+                if count not in node_counts:
+                    node_counts[count] = 0
+                node_counts[count] += 1
+
+    for count in node_counts.values():
+        probability = count / total_internal_nodes
+        entropy -= probability * math.log2(probability)
+
+    return entropy
+
+
+
+#################################################################
+# Machine Learning                                              #
+#################################################################
+
+
+def split_data(data, feature_names, target_name):
+
+    target = data[target_name].values
+    features = data[feature_names].values
+    train_mask = data['selected'] == 'Train'
+    test_mask = data['selected'] == 'Test'
+    train_target, test_target = target[train_mask], target[test_mask]
+    train_features, test_features = features[train_mask], features[test_mask]
+
+    return train_features, test_features, train_target, test_target
+
+def feature_selection(train_features, train_target, num_rounds, num_features):
+
+    dtrain = xgb.DMatrix(train_features, label=train_target)
+    params = {'objective': 'reg:squarederror'}
+    model = xgb.train(params, dtrain, num_rounds)
+
+    scores = model.get_score(importance_type='weight')
+    sorted_features = sorted(scores, key=scores.get, reverse=True)
+    selected_features = sorted_features[:num_features]
+
+    print('Selected features and their scores:')
+    for feature in selected_features:
+        print(f"{feature}: {scores[feature]}")
+
+    scores = np.array([scores[feature] for feature in selected_features])
+    return scores
+
+def train_xgboost_model(train_features, train_target, num_rounds, num_features):
+
+    scores = feature_selection(train_features, train_target, num_rounds, num_features)
+    selected_feature_indices = np.argsort(scores)[-num_features:]
+    selected_train_features = train_features[:, selected_feature_indices]
+
+    # convert the data to DMatrix format & set parameters
+    dtrain = xgb.DMatrix(selected_train_features, label=train_target)
+    params = {
+        'objective': 'reg:squarederror',  # regression problem
+        'eval_metric': 'rmse'  # Root Mean Squared Error metric
+    }
+    # return XGBoost model
+    return xgb.train(params, dtrain, num_rounds, verbose_eval=False)
+
+def evaluate_model(model, test_features, test_target):
+    # convert the test features to DMatrix format & make predictions
+    dtest = xgb.DMatrix(test_features)
+    predictions = model.predict(dtest)
+
+    # evaluate the model
+    rmse = mean_squared_error(test_target, predictions) ** 0.5
+    print(f"Root Mean Squared Error (RMSE) on test set: {rmse}")
+
+    # perform cross-validation
+    cv_scores = -cross_val_score(model, test_features, test_target, cv=5, scoring='neg_root_mean_squared_error')
+    mean_cv_rmse = cv_scores.mean()
+    print(f"Cross-validated RMSE: {mean_cv_rmse}")
+
+    return predictions
