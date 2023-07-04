@@ -1,9 +1,11 @@
 from ete3 import Tree
 import re
 import os
+import time
 import random
 import datetime
 from subprocess import Popen
+from os.path import join as opj
 from defs import *
 
 
@@ -16,7 +18,7 @@ def get_time():
 
 
 def get_res_path(path, standalone):
-    return path if not standalone else os.path.join(path, 'Results_' + get_time())
+    return path if not standalone else opj(path, 'Results_' + get_time())
 
 
 class paramio:
@@ -176,8 +178,8 @@ class paramio:
 
     def set_simulated(self, chromevol_res_dir, num_of_simulations=120, *, heterogeneous=False, nodes_file_path=None, multiplier=None, manipulated_rates=None): 
 
-        chromevol_res_path = os.path.join(chromevol_res_dir, 'chromEvol.res')
-        freq_file_path = os.path.join(chromevol_res_dir, 'root_freq')
+        chromevol_res_path = opj(chromevol_res_dir, 'chromEvol.res')
+        freq_file_path = opj(chromevol_res_dir, 'root_freq')
         if not os.path.exists(freq_file_path):
             create_freq_file(chromevol_res_path, freq_file_path)
         content = self._read_res_params(chromevol_res_path, freq_file_path, nodes_file_path, heterogeneous)
@@ -192,12 +194,12 @@ class paramio:
         self._write_rate_params(rate_param_dict, multiplier, manipulated_rates)
         
         # note that the sequence at which parameters are set is important in this function!
-        ml_tree = os.path.join(chromevol_res_dir, 'MLAncestralReconstruction.tree')
+        ml_tree = opj(chromevol_res_dir, 'MLAncestralReconstruction.tree')
         max_base_num = 0
         if hasattr(self, 'baseNumRFunc') and self.baseNumRFunc != 'IGNORE':
             max_base_num = max([int(_.split(';')[1]) for var, _ in vars(self).items() if var.startswith('baseNum_')])
         # important: in sim mode dataFile is NOT counts_path, but final output dir!
-        counts_path = os.path.join(chromevol_res_dir, 'counts.fasta')
+        counts_path = opj(chromevol_res_dir, 'counts.fasta')
         self.maxBaseNumTransition = max(test_max_on_tree(counts_path, ml_tree), max_base_num+1)
         #
         # Ask Anat about the counts bug, and the logic of test_max_on_tree returning 0 conditional !!!
@@ -213,7 +215,7 @@ class paramio:
         path = self.resultsPathDir if path is None else path
         if not os.path.exists(path):
             os.makedirs(path)
-        param_path = os.path.join(path, self.fname + '.params')
+        param_path = opj(path, self.fname + '.params')
         del self.fname
         with open(param_path, 'w') as file:
             for name, value in vars(self).items():
@@ -299,16 +301,38 @@ def write_rate_parameters(rate_parameters):
 #################################################################
 
 
+def get_nth_parent(root, n):
+    for _ in range(n):
+        root = os.path.dirname(root)
+    return os.path.basename(root)
+
+
+def check_output(path, name='out.txt', flag='Total running time is:'):
+    path = opj(path, name)
+    if os.path.isfile(path):
+        with open(path, 'r') as f:
+            content = f.read()
+            if flag in content:
+                return True
+    return False
+
+
+def wait_for_output(path, **kwargs):
+    while not check_output(path, **kwargs):
+        # wait one minute
+        time.sleep(60)
+
+
 def do_job(path, name, mem=4, ncpu=1, exe=CHROMEVOL_EMP_EXE, queue=QUEUE, standalone=False, cmd=None):
 
     if cmd==None:
-        param_path = os.path.join(path, f'{name}.params')
-        cmd = f'{exe} param={param_path} > {os.path.join(path, "out.txt")} 2> {os.path.join(path, "err.txt")}\n'
+        param_path = opj(path, f'{name}.params')
+        cmd = f'{exe} param={param_path} > {opj(path, "out.txt")} 2> {opj(path, "err.txt")}\n'
         
         if not standalone:
-            print(f'running: {cmd}')
+            print(f'running: {param_path}')
             os.system(cmd)
-            return
+            return wait_for_output(path)
         # else standalone is True
     # else cmd was given
     
@@ -317,9 +341,9 @@ def do_job(path, name, mem=4, ncpu=1, exe=CHROMEVOL_EMP_EXE, queue=QUEUE, standa
 
     module = MODULE_COMMAND
     env = ACTIVATE_ENV
-    job_path = os.path.join(path, f'{name}.sh')
-    err_path = os.path.join(path, f'{name}.err')
-    out_path = os.path.join(path, f'{name}.out')
+    job_path = opj(path, f'{name}.sh')
+    err_path = opj(path, f'{name}.err')
+    out_path = opj(path, f'{name}.out')
     text = f'''\
 #!/bin/bash
 #PBS -S /bin/bash
@@ -341,10 +365,32 @@ module load {module}
     Popen(['qsub', job_path])
 
 
-def get_cmd(path, name, sim_num, model, mode):
+def get_cmd(path, sim_num, model, mode):
+
+    cwd = os.getcwd()
+    ie_path = opj(cwd, 'infer_empirical.py')
+    sm_path = opj(cwd, 'simulate_models.py')
+    is_path = opj(cwd, 'infer_on_sims.py')
+    
+    cmd = ''
+    emp_out = opj(path, mode)
+    if not check_output(emp_out):
+        cmd += f'python {ie_path} -i {path} -o {path} -m {model} -d {mode}\n'
+    sim_out = opj(emp_out, 'Sims/')
+    if not check_output(sim_out):
+        cmd += f'python {sm_path} -i {emp_out} -o {sim_out} -n {sim_num}\n'
+    tree_path = opj(emp_out, 'tree.newick')
+    inf_on_sim_out = opj(sim_out, 'Infer_on_sims')
+    cmd += f'python {is_path} -i {sim_out} -t {tree_path} -m {model} -o {inf_on_sim_out} -r {sim_num}\n'
+    
+    return cmd
+
+
+'''
+def get_cmd(path, sim_num, model, mode):
     sim_in = os.path.join(path, mode)
     sim_out = os.path.join(sim_in, 'Sims/')
-    tree_path = os.path.join(sim_in, name+'.newick')
+    tree_path = os.path.join(sim_in, 'tree.newick')
     inf_on_sim_out = os.path.join(sim_out, 'Infer_on_sims')
 
     cwd = os.getcwd()
@@ -352,10 +398,11 @@ def get_cmd(path, name, sim_num, model, mode):
     sm_path = os.path.join(cwd, 'simulate_models.py')
     is_path = os.path.join(cwd, 'infer_on_sims.py')
 
-    return f'''\
+    return f"""\
 python {ie_path} -i {path} -o {path} -m {model} -d {mode}
 python {sm_path} -i {sim_in} -o {sim_out} -n {sim_num}
 python {is_path} -i {sim_out} -t {tree_path} -m {model} -o {inf_on_sim_out} -r {sim_num}
+"""
 '''
 
 
@@ -751,4 +798,3 @@ def fitch(tree_file, counts_file=False, mlar_tree=True):
         print(f"Exception: {ex}. Unable to calculate parsimony score")
         score = None
     return score
-

@@ -90,3 +90,4 @@ if __name__ == '__main__':
     parser.add_argument('--standalone', action='store_true', default=False, help='use standalone flag to generate job file')
     
     main(parser.parse_args())
+    
