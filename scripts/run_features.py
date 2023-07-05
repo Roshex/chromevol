@@ -1,13 +1,15 @@
 import os
+from pickle import NONE
 import random
 import argparse
 import numpy as np
 import pandas as pd
+import xgboost as xgb
 import seaborn as sns
 import matplotlib.pyplot as plt
 from ete3 import Tree
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, mean_squared_error
 import utils as utl
 
 def select_n_clades(tree, n, m):
@@ -64,6 +66,18 @@ def plot_confusion_matrix(test_target, predictions):
     plt.xlabel('Predicted Class')
     plt.ylabel('True Class')
     plt.title('Confusion Matrix')
+    plt.show()
+
+def plot_params_evolution(best_params_list, mse_list):
+    fig, axes = plt.subplots(2, 2, figsize=(10, 10))
+    axes = axes.flatten()
+
+    for i, param in enumerate(['learning_rate', 'max_depth', 'lambda', 'gamma', 'n_estimators']):
+        param_values = [params[param] for params in best_params_list]
+        axes[i].plot(param_values, mse_list)
+        axes[i].set_xlabel(param)
+        axes[i].set_ylabel('mse')
+
     plt.show()
 
 def main(args):
@@ -141,18 +155,66 @@ def main(args):
                         'gain_ratio', 'loss_ratio', 'dupl_ratio', 'demi_ratio', 'norm_cum_diff', 'correlation',
                         'mean_interaction', 'empirical_AICc', 'nrm_homogenous_AICc', 'nrm_heterogenous_AICc']
     target_name = 'dAICc_cutoff'
-    train_features, test_features, train_target, test_target = split_data(taxa_df, feature_names=feature_list, target_name='dAICc_cutoff')
 
-    num_rounds = 100
-    num_features = 10
-    model = train_xgboost_model(train_features, train_target, num_rounds, num_features)
+    # train_features, test_features, train_target, test_target
+    X_train, X_val, y_train, y_val = utl.split_data(taxa_df, feature_names=feature_list, target_name=target_name)
 
-    predictions = evaluate_model(model, test_features, test_target)
+    model = xgb.XGBRegressor()
 
-    plot_learning_curve(model, num_rounds)
-    plot_scatter_plot(test_target, predictions)
-    plot_histogram(predictions)
-    plot_confusion_matrix(test_target, predictions)
+    iter_num = 3
+    k = 15
+    rfe = False
+    space_frac = 0.6
+    best_params = None
+
+    selected_features = []
+    best_params_list = []
+    mse_list = []
+
+    for _ in range(iter_num):
+
+        # feature selection
+        X_train_selected, selector = utl.select_features(model, X_train, y_train, k=k, use_rfe=rfe)
+        # hyperparameter tuning
+        best_params, _ = utl.tune_hyperparams(model, X_train_selected, y_train, \
+            space_frac=space_frac, best_params=best_params, bayesian_opt=True)
+        # model evaluation
+        mse = utl.evaluate_model(X_train, X_val, y_train, y_val, selector, best_params)
+    
+        # store results for this iteration
+        selected_features.append(X_train.columns[selector.get_support()])
+        best_params_list.append(best_params)
+        mse_list.append(mse)
+
+        # reduce constants for the next iteration
+        space_frac *= 0.8
+        k -= 5
+        if k < 10:
+            rfe = True
+
+    # final model selection
+    best_iteration = np.argmax(mse_list)
+    final_features = selected_features[best_iteration]
+    final_best_params = best_params_list[best_iteration]
+    print(f'Best features: {final_features}', f'Best parameters: {final_best_params}', sep='\n')
+
+    # retrain final model using all training data and selected features
+    final_model = xgb.XGBRegressor(**final_best_params)
+    final_model.fit(X_train_selected, y_train, num_boost_rounds=1000, early_stopping_rounds=10, \
+       eval_set=[(X_train_selected, y_train), (X_val_selected, y_val)], verbose=False)
+
+    # final evaluation on the validation set
+    X_val_selected = selector.transform(X_val)
+    y_pred = final_model.predict(X_val_selected)
+    final_mse = mean_squared_error(y_val, y_pred)
+    print(f'Final RMSE: {final_mse**0.5}')
+
+    plot_learning_curve(final_model, 1000)
+    plot_scatter_plot(y_val, y_pred)
+    plot_histogram(y_pred)
+    plot_confusion_matrix(y_val, y_pred)
+    plot_params_evolution(best_params_list, mse_list)
+    xgb.plot_tree(final_model, rankdir='LR')
 
 if __name__ == '__main__':
 
@@ -220,18 +282,6 @@ def calculate_event_sum_over_branch_length(tree):
 
 
 
-
-# Split the data into training and testing sets
-X_train, X_test, y_train, y_test = train_test_split(features, aicc_cutoff_labels, test_size=0.2, random_state=42)
-
-# Initialize the XGBoost model
-model = xgb.XGBRegressor(objective="reg:squarederror", random_state=42)
-
-# Train the model
-model.fit(X_train, y_train)
-
-# Use the trained model to predict AICc cutoff
-predictions = model.predict(X_test)
 
 # Calculate the AICc based on the predictions
 def calculate_aicc_cutoff(predictions, y_true, num_features):

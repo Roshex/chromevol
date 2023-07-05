@@ -4,6 +4,7 @@ import time
 import math
 import random
 import datetime
+import warnings
 import numpy as np
 import xgboost as xgb
 import scipy.stats as stt
@@ -11,9 +12,11 @@ import statsmodels.api as sm
 from os.path import join as opj
 from ete3 import Tree
 from subprocess import Popen
+from skopt import BayesSearchCV
 from itertools import combinations
 from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import cross_val_score, GridSearchCV
+from sklearn.feature_selection import SelectKBest, f_regression, RFECV
 from defs import *
 
 
@@ -371,8 +374,9 @@ def send_job(path, name, cmd, mem=4, ncpu=1, queue=QUEUE):
 #PBS -l select=ncpus={ncpu}:mem={mem}gb
 source ~/.bashrc
 cd {path}
-module load {module}
-{env}
+
+{module}{env}
+
 {cmd}
 '''
     with open(job_path, 'w') as file:
@@ -792,47 +796,47 @@ def remove_root_polytomies(tree_file, counts_file, mx=2):
 
 
 def create_counts_hash(counts_file):
-    """
+    '''
     puts all counts from a counts file in a dictionary: taxa_name: count. Taxa with an X count are skipped.
     If there are counts that are X the function returns two hashes and a set of the taxa to prune.
     :param counts_file in FASTA format
     :return:(2) dictionary of counts
-    """
+    '''
     d = {}
-    with open(counts_file, "r") as counts_handler:
+    with open(counts_file, 'r') as counts_handler:
         for line in counts_handler:
             line = line.strip()
             if line.startswith('>'):  # taxon name
                 name = line[1:]
             else:
-                if line != "x":
+                if line != 'x':
                     num = int(line)
                     d[name] = num
     return d
 
 
 def fitch(tree_file, counts_file=False, mlar_tree=True):
-    """
+    '''
     calculates the maximum parsimony score following Fitch algorithm, where the states are chromosome counts.
     :param tree_file: MLAncestralReconstruction or original tree file
     :param counts: counts file (needed if simulated, or if original tree is used)
     :param mlar_tree: True if MLAncestralReconstruction tree is used, False if original tree is used
     :return: number of unions (parsimony score)
-    """
+    '''
     try:
         t = Tree(tree_file, format=1)
         score = 0
         if counts_file:
             d = create_counts_hash(counts_file)
 
-        for node in t.traverse("postorder"):
+        for node in t.traverse('postorder'):
             if not node.is_leaf():  # internal node
                 lst = []  # list version
                 for child in node.get_children():
                     if child.is_leaf():  # if the child is a tip - parse number from tip label or counts file
                         if mlar_tree:
                             if counts_file:  # dictionary exists if the tree is simulated --> take the number from it
-                                name = re.search("(.*)\-\d+", child.name)
+                                name = re.search('(.*)\-\d+', child.name)
                                 if name:
                                     num = {int(d.get(name.group(1)))}
                             else:  # calculation on original counts
@@ -851,7 +855,7 @@ def fitch(tree_file, counts_file=False, mlar_tree=True):
                     result = intersect
                 node.name = result
     except Exception as ex:
-        print(f"Exception: {ex}. Unable to calculate parsimony score")
+        print(f'Exception: {ex}. Unable to calculate parsimony score')
         score = None
     return score
 
@@ -909,9 +913,10 @@ def get_branch_lengths(tree):
 
 
 def get_stats(v):
-    # skewness, kurtosis, MAD, signal
-    return stt.skew(v), stt.kurtosis(v), np.mean(np.abs(v - np.median(v))), sm.OLS(v, sm.add_constant(range(len(v)))).fit().rsquared
-
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        # skewness, kurtosis, MAD, signal
+        return stt.skew(v), stt.kurtosis(v), np.mean(np.abs(v - np.median(v))), sm.OLS(v, sm.add_constant(range(len(v)))).fit().rsquared
 
 
 #################################################################
@@ -920,7 +925,7 @@ def get_stats(v):
 
 
 def extract_chrom(node):
-    return int(re.search(".*\-(\d+)", node.name).group(1))
+    return int(re.search('.*\-(\d+)', node.name).group(1))
 
 
 def count_transitions(mlar_tree):
@@ -998,59 +1003,85 @@ def get_entropy(mlar_tree):
 
 def split_data(data, feature_names, target_name):
 
-    target = data[target_name].values
-    features = data[feature_names].values
-    train_mask = data['selected'] == 'Train'
-    test_mask = data['selected'] == 'Test'
-    train_target, test_target = target[train_mask], target[test_mask]
-    train_features, test_features = features[train_mask], features[test_mask]
+    X = data[feature_names].values # features
+    y = data[target_name].values # target
+    test = data['selected'] == 'Test'
+    train = data['selected'] == 'Train'
 
-    return train_features, test_features, train_target, test_target
+    return X[train], X[test], y[train], y[test]
 
-def feature_selection(train_features, train_target, num_rounds, num_features):
 
-    dtrain = xgb.DMatrix(train_features, label=train_target)
-    params = {'objective': 'reg:squarederror'}
-    model = xgb.train(params, dtrain, num_rounds)
+def select_features(model, X_train, y_train, k, use_rfe=False):
 
-    scores = model.get_score(importance_type='weight')
-    sorted_features = sorted(scores, key=scores.get, reverse=True)
-    selected_features = sorted_features[:num_features]
+    if use_rfe: # recursive feature elimination
+        selector = RFECV(estimator=model, step=1, cv=5)
+    else:
+        selector = SelectKBest(f_regression, k=k)
+        
+    X_train_selected = selector.fit_transform(X_train, y_train)
 
-    print('Selected features and their scores:')
-    for feature in selected_features:
-        print(f"{feature}: {scores[feature]}")
+    feature_scores = list(zip(X_train.columns, selector.scores_))
+    sorted_scores = sorted(feature_scores, key=lambda x: x[1], reverse=True)
+    print('Selected Features:')
+    for feature, score in sorted_scores[:len(X_train_selected)]:
+        print(f'- {feature}: {score}')
 
-    scores = np.array([scores[feature] for feature in selected_features])
-    return scores
+    return X_train_selected, selector
 
-def train_xgboost_model(train_features, train_target, num_rounds, num_features):
 
-    scores = feature_selection(train_features, train_target, num_rounds, num_features)
-    selected_feature_indices = np.argsort(scores)[-num_features:]
-    selected_train_features = train_features[:, selected_feature_indices]
+def tune_hyperparams(model, X_train, y_train, scoring='neg_mean_squared_error', space_frac=0.5, best_params=None, bayesian_opt=False):
 
-    # convert the data to DMatrix format & set parameters
-    dtrain = xgb.DMatrix(selected_train_features, label=train_target)
-    params = {
-        'objective': 'reg:squarederror',  # regression problem
-        'eval_metric': 'rmse'  # Root Mean Squared Error metric
+    param_grid = {
+        'learning_rate': [0.1, 0.2, 0.3],
+        'max_depth': [3, 4, 5],
+        'lambda': [0.01, 0.1, 1.0],
+        'gamma': [0.01, 0.1, 1.0],
+        'n_estimators': [10, 100, 1000]
     }
-    # return XGBoost model
-    return xgb.train(params, dtrain, num_rounds, verbose_eval=False)
+    # reduce the search space around the best parameters
+    if best_params is not None:
+        param_grid_reduced = {}
+        for param, values in best_params.items():
+            range_min = max(values - space_frac * (max(param_grid[param]) - min(param_grid[param])), min(param_grid[param]))
+            range_max = min(values + space_frac * (max(param_grid[param]) - min(param_grid[param])), max(param_grid[param]))
+            param_grid_reduced[param] = np.linspace(range_min, range_max, num=5).tolist()
+    else:
+        param_grid_reduced = param_grid
 
-def evaluate_model(model, test_features, test_target):
-    # convert the test features to DMatrix format & make predictions
-    dtest = xgb.DMatrix(test_features)
-    predictions = model.predict(dtest)
+    grid_search = GridSearchCV(estimator=model, param_grid=param_grid_reduced, scoring=scoring, cv=5)
+    grid_search.fit(X_train, y_train)
+    
+    best_params = grid_search.best_params_
+    best_score = grid_search.best_score_
 
-    # evaluate the model
-    rmse = mean_squared_error(test_target, predictions) ** 0.5
-    print(f"Root Mean Squared Error (RMSE) on test set: {rmse}")
+    if bayesian_opt:
 
-    # perform cross-validation
-    cv_scores = -cross_val_score(model, test_features, test_target, cv=5, scoring='neg_root_mean_squared_error')
-    mean_cv_rmse = cv_scores.mean()
-    print(f"Cross-validated RMSE: {mean_cv_rmse}")
+        param_bayes = {}
+        for param, values in param_grid_reduced.items():
+            param_bayes[param] = (param_grid_reduced[param][0], param_grid_reduced[param][-1], 'log-uniform')
+        bayes_search = BayesSearchCV(estimator=model, search_spaces=param_grid, scoring=scoring, cv=5, n_jobs=-1)
+        bayes_search.fit(X_train, y_train)
 
-    return predictions
+        # compare GridSearch and Bayesian optimization results
+        if bayes_search.best_score_ > grid_search.best_score_:
+            best_params = bayes_search.best_params_
+            best_score = bayes_search.best_score_
+    
+    return best_params, best_score
+
+
+def evaluate_model(model, X_train, X_val, y_train, y_val, selector, best_params):
+    
+    X_val_selected = selector.transform(X_val)
+    model.fit(selector.transform(X_train), y_train, num_boost_rounds=1000, early_stopping_rounds=10, \
+        verbose=False, **best_params)
+
+    y_pred = model.predict(X_val_selected)
+    mse = mean_squared_error(y_val, y_pred)
+ 
+    mse_scores = -cross_val_score(model, X_val_selected, y_val, cv=5, scoring='neg_mean_squared_error')
+    avg_mse = mse_scores.mean()
+    print(f'Cross-validated RMSE: {avg_mse**0.5}')
+
+    return mse, y_pred
+

@@ -2,6 +2,7 @@ import os
 import argparse
 import numpy as np
 import pandas as pd
+import seaborn as sns
 import matplotlib.pyplot as plt
 from ete3 import Tree
 from math import floor
@@ -115,7 +116,7 @@ def main(args):
         # turn the dictionary into a DataFrame
         taxa_df = pd.DataFrame(taxa_list)
         taxa_df.reset_index(drop=True, inplace=True)
-    
+        
         # decide on the train set
         taxa_df = split_test_train(taxa_df, 'taxa', 'MP', bins, train_split)
     
@@ -125,16 +126,22 @@ def main(args):
         data_path = os.path.join(out_dir, 'data_summary.csv')
         taxa_df.to_csv(data_path, index=False)
     
-        plt.hist(taxa_df['taxa'], bins=10, edgecolor='black') # set bins LATER
+        colors = ["#1f77b4", "#ff7f0e", "#2ca02c"]
+        sns.histplot(data=taxa_df, x='taxa', bins=bins, hue='selected', multiple='stack', log_scale=True, palette=colors)
         plt.xlabel('Number of taxa')
         plt.ylabel('Frequency')
         plt.title('Distribution of taxa number')
         plt.show()
 
     # loop over the DataFrame based on the 'selected' column
+    counter = 0
     for index, row in taxa_df.iterrows():
-
+        
         if str(row['selected'])[0] == 'T':
+        
+            if counter >= args.iters:
+                break
+            counter += 1
 
             req = floor(1+int(row['taxa'])/100)*req_multiplier
             
@@ -150,10 +157,11 @@ if __name__ == '__main__':
     parser.add_argument('--min_taxa', '-n', type=int, default=50, help='minimum number of taxa threshold')
     parser.add_argument('--max_polytomy', '-p', type=float, default=0.1, help='maximum polytomy portion threshold')
     parser.add_argument('--train_split', '-t', type=float, default=0.5, help='portion of trees for training set')
-    parser.add_argument('--bins', '-b', type=int, default=5, help='interval for selecting trees from the distribution')
-    parser.add_argument('--simulation_num', '-s', type=int, default=10, help='number of simulations')
+    parser.add_argument('--bins', '-b', type=int, default=20, help='interval for selecting trees from the distribution')
+    parser.add_argument('--simulation_num', '-s', type=int, default=100, help='number of simulations')
     parser.add_argument('--memcpu_ratio', type=float, default=1.5, help='ratio between mem in gb and #cores to ask for the heterogenous model; def 1.5')
     parser.add_argument('--speed_multiplier', type=int, default=6, help='speed multiplier for the heterogenous model; def 6')
     parser.add_argument('--reuse', type=str, default=None, help='used to load df from dir with provided date in name')
+    parser.add_argument('--iters', type=int, default=10, help='limits the number of jobs sent at once')
 
     main(parser.parse_args())
