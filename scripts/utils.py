@@ -6,7 +6,7 @@ import random
 import datetime
 import warnings
 import numpy as np
-import xgboost as xgb
+import pandas as pd
 import scipy.stats as stt
 import statsmodels.api as sm
 from os.path import join as opj
@@ -245,8 +245,8 @@ def get_nth_parent(root, n):
     return os.path.basename(root)
 
 
-def write_expected_outputs(path, output_dirs, name=None, flag=None):
-    cats = { 'paths': output_dirs, 'name': name, 'flag': flag }
+def write_expected_outputs(path, output_dirs, name=None, done=None, stop=None):
+    cats = { 'paths': output_dirs, 'name': name, 'done': done, 'stop': stop }
     path = opj(path, 'expected_outputs.txt')
     with open(path, 'w') as f:
         for cat, val in cats.items():
@@ -274,7 +274,8 @@ def parse_expected_outputs(path):
     return outputs
 
 
-def check_output(path, name='out.txt', flag='Total running time is:', config=False, notif1='checking', notif2='Outputs found'):
+def check_output(path, name='out.txt', done='Total running time is:', stop='ParameterException',\
+    config=False, notif1='checking', notif2='Outputs found'):
 
     if config:
         print(f'{notif1}: expected_outputs.txt')
@@ -284,7 +285,7 @@ def check_output(path, name='out.txt', flag='Total running time is:', config=Fal
             return False
         paths = outputs['paths']
         name = outputs['name'] if 'name' in outputs else name
-        flag = outputs['flag'] if 'flag' in outputs else flag
+        done = outputs['done'] if 'done' in outputs else done
     else:
         paths = [path]
 
@@ -294,7 +295,12 @@ def check_output(path, name='out.txt', flag='Total running time is:', config=Fal
         if os.path.isfile(p):
             with open(p, 'r') as f:
                 content = f.read()
-                if flag not in content:
+                if stop in content:
+                    print(f'Run failed: {p}')
+                    with open('failed_outputs.txt', 'a') as f:
+                        f.write(f'{p}\n')
+                    return True
+                if done not in content:
                     print('file is yet to be completed')
                     return False
         else:
@@ -549,6 +555,46 @@ def extract_score(res_dir, string):
         text = f.read()
         match = re.search(string, text)
     return match.group(1) if match else 'none' # convert to float?
+
+
+def get_min_clade(dir):
+    path = os.path.join(dir, 'emp_tree.params')
+    with open(path, 'r') as f:
+        minCladeSize = re.search(r'_minCladeSize = (\d+)', f.read())
+        if minCladeSize:
+            return minCladeSize.group(1)
+    path = os.path.join(dir, 'out.txt')
+    with open(path, 'r') as f:
+        minCladeSize = re.search(r'_minCladeSize not specified. Default used instead: (\d+)', f.read())
+        if minCladeSize:
+            return minCladeSize.group(1)
+
+
+def read_event_matrix(path):
+
+    event_text = trans_text = []
+    with open(opj(path, 'expectations_second_round.txt'), 'r') as f:
+        text = f.read()
+        event_text = re.search(r"#ALL EVENTS EXPECTATIONS PER NODE\n([\s\S]+?)#\+", text).group(1).strip().split('\n')
+        event_text = [line.split('\t') for line in event_text]
+        trans_text = re.search(r"#TOTAL EXPECTATIONS:\n([\s\S]+?)TOMAX", text).group(1).strip().split('\n')
+        trans_text = [line.split(': ') for line in trans_text]
+
+    conv = {'DYS': ['GAIN', 'LOSS'],
+            'POL': ['DUPLICATION', 'DEMI-DUPLICATION', 'BASE-NUMBER']}
+    
+    event_matrix = pd.DataFrame(event_text[1:], columns=event_text[0])
+    # convert events to dyploidy or polyploidy
+    event_matrix['DYS_EVENT'] = event_matrix.apply(lambda row: sum(float(row[col]) for col in conv['DYS']), axis=1)
+    event_matrix['POL_EVENT'] = event_matrix.apply(lambda row: sum(float(row[col]) for col in conv['POL']), axis=1)
+    event_matrix = event_matrix.drop(columns=['GAIN', 'LOSS', 'DUPLICATION', 'DEMI-DUPLICATION', 'BASE-NUMBER', 'TOMAX']) 
+
+    # dict comprehension to convert to transitions dict
+    transitions = {conv[0]: conv[1] for conv in trans_text}
+    # convert dict to dyploidy or polyploidy
+    transitions = {k: sum(float(transitions[i]) for i in v) for k, v in conv.items()} 
+
+    return event_matrix, transitions
 
 
 
@@ -860,6 +906,32 @@ def fitch(tree_file, counts_file=False, mlar_tree=True):
     return score
 
 
+def get_m_subtrees(tree, m, n):
+    '''
+    :param tree: ete3 tree object
+    :param m: number of subtrees to return [at most]
+    :param n: number of leaves in each subtree [at most]
+    :return: list of ete3 tree objects
+    '''
+    subtrees = []
+    tree_copy = tree.copy()
+    for _ in range(n-2):
+        for node in tree_copy.traverse('preorder'):
+            if len(node.get_leaves()) == n:
+                subtrees.append(node.detach())
+        n -= 1
+    # remove subtrees that are not a monophyletic group of the original tree
+    for subtree in subtrees:
+        monophyly = True
+        try:
+            monophyly = tree.check_monophyly(values=[leaf.name for leaf in subtree.get_leaves()], target_attr='name')[0]
+        except:
+            subtrees.remove(subtree)
+        if not monophyly:
+            subtrees.remove(subtree)
+    return subtrees[:m] if len(subtrees) > m else subtrees
+
+
 def symmetry_score(tree, topology_only=False):
     max_leaf_distances = []
     internal_nodes = 0
@@ -915,8 +987,36 @@ def get_branch_lengths(tree):
 def get_stats(v):
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        # skewness, kurtosis, MAD, signal
-        return stt.skew(v), stt.kurtosis(v), np.mean(np.abs(v - np.median(v))), sm.OLS(v, sm.add_constant(range(len(v)))).fit().rsquared
+        # skewness, kurtosis, MAD
+        return stt.skew(v), stt.kurtosis(v), np.mean(np.abs(v - np.median(v)))
+
+
+def count_comparisons(tree, min_clade):
+    
+    clade_count = 0
+    for node in tree.traverse('postorder'):
+        if node.up:
+            taxon_count = sum(1 for _ in node.iter_leaves())
+            if taxon_count >= min_clade:
+                clade_count += 1
+    
+    return clade_count
+
+
+def count_events(tree, event_matrix):
+
+    node_names = []
+    branch_sum = 0
+    for node in tree.traverse():
+        node_names.append(node.name)
+        branch_sum += node.dist
+
+    event_sum = {}
+    for key in ['DYS_EVENT', 'POL_EVENT']:
+        event_sum[key[:3]] = np.sum(event_matrix.loc[event_matrix['NODE'].isin(node_names), key].values) / branch_sum
+
+    return event_sum
+    
 
 
 #################################################################
@@ -928,51 +1028,13 @@ def extract_chrom(node):
     return int(re.search('.*\-(\d+)', node.name).group(1))
 
 
-def count_transitions(mlar_tree):
-    gains = 0
-    losses = 0
-    duples = 0
-    demis = 0
-    internal_nodes = 0
-    for node in mlar_tree.traverse():
-        if not node.is_leaf() and node.up:
-            parent_chrom = extract_chrom(node.up)
-            child_chrom = extract_chrom(node)
-            if parent_chrom - child_chrom == 1:
-                gains += 1
-            elif parent_chrom - child_chrom == -1:
-                losses += 1
-            elif 2*parent_chrom == child_chrom:
-                duples += 1
-            else:
-                demis += 1
-            internal_nodes += 1
-    return gains/internal_nodes, losses/internal_nodes, duples/internal_nodes, demis/internal_nodes
-
-
-def chromosome_branch_correlation(mlar_tree):
-    chromosome_traits = []
-    branch_lengths = []
-    cumulative_diff = 0
-    for node in mlar_tree.traverse():
+def order_signal(mlar_tree):
+    ordered_chromosome = []
+    # postorder DFS on tree to get ordered chromosome list
+    for node in mlar_tree.traverse('postorder'):
         if node.up:
-            parent_num = extract_chrom(node.up)
-            difference = extract_chrom(node) - parent_num
-            chromosome_trait = (difference) / parent_num
-            chromosome_traits.append(chromosome_trait)
-            branch_length = node.dist
-            branch_lengths.append(branch_length)
-            cumulative_diff += abs(difference)
-
-    correlation = np.corrcoef(chromosome_traits, branch_lengths)[0, 1]
-
-    model = sm.OLS(branch_lengths, sm.add_constant(chromosome_traits))
-    results = model.fit()
-    regression_coefficients = results.params[1]
-
-    mean_interaction = np.mean(np.multiply(chromosome_traits, branch_lengths))
-
-    return cumulative_diff, correlation, regression_coefficients, mean_interaction
+            ordered_chromosome.append(extract_chrom(node))
+    return sm.OLS(ordered_chromosome, sm.add_constant(range(len(ordered_chromosome)))).fit().rsquared
 
 
 def get_entropy(mlar_tree):
@@ -995,11 +1057,50 @@ def get_entropy(mlar_tree):
     return entropy
 
 
+def chromosome_branch_correlation(mlar_tree):
+    chromosome_diffs = []
+    branch_lengths = []
+    normalized_cumulative_diff = 0
+    for node in mlar_tree.traverse():
+        if node.up:
+            chromosome_diff = extract_chrom(node) - extract_chrom(node.up)
+            chromosome_diffs.append(chromosome_diff)
+            branch_length = node.dist
+            branch_lengths.append(branch_length)
+            normalized_cumulative_diff += abs(chromosome_diff) / branch_length
+
+    correlation = np.corrcoef(chromosome_diffs, branch_lengths)[0, 1]
+
+    mean_interaction = np.mean(np.multiply(chromosome_diffs, branch_lengths))
+
+    model = sm.OLS(branch_lengths, sm.add_constant(chromosome_diffs))
+    results = model.fit()
+    regression_coefficients = results.params[1]
+
+    return correlation, mean_interaction, regression_coefficients, normalized_cumulative_diff
+
+
 
 #################################################################
 # Machine Learning                                              #
 #################################################################
 
+
+def choose_sims(path, num_of_sims, k=3, random=False):
+    '''
+
+    sims -> cluster -> pick a few? ent, std, model adequacy paprer -> 4 features
+
+    '''
+    if random:
+        return random.sample(range(num_of_sims), k)
+    # cluster sims knn
+    for i in range(num_of_sims):
+        # kmeans = KMeans(n_clusters=k, random_state=0).fit(sims)
+        # return kmeans.labels_
+        pass
+    return
+ 
 
 def split_data(data, feature_names, target_name):
 

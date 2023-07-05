@@ -1,6 +1,4 @@
 import os
-from pickle import NONE
-import random
 import argparse
 import numpy as np
 import pandas as pd
@@ -12,20 +10,70 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import confusion_matrix, mean_squared_error
 import utils as utl
 
-def select_n_clades(tree, n, m):
-    # breadth-first search (BFS) algorithm to select n clades from a phylogenetic tree
-    selected_clades = []
-    queue = [tree]
+def features_to_list(paths, sim_num, p_cutoff, string = r'AICc of the best model = ([\d.]+)'):
+    # for LL use: string = r'Final optimized likelihood is: ([\d.]+)'
+    new_features = []
+    for path in paths:
 
-    while queue and len(selected_clades) < n:
-        node = queue.pop(0)
-        
-        if not node.is_leaf() and len(node.get_leaves()) > m:
-            selected_clades.append(node)
-        
-        queue.extend(node.children)
-    
-    return selected_clades
+        emp_dir, sim_dir, inf_dir = utl.concat_paths(path, 'Homogenous')
+        mlar_tree = Tree(os.path.join(emp_dir, 'MLAncestralReconstruction.tree'))
+        emp_counts = utl.get_counts(os.path.join(emp_dir, 'counts.fasta'))
+
+        # get 10 subtrees
+        subtrees = utl.get_m_subtrees(mlar_tree, m=10, n=utl.count_taxa(mlar_tree)//15)
+
+        # calculate correlation features
+        correlation, reg_coef, mean_interaction, ncd = utl.chromosome_branch_correlation(mlar_tree)
+        std_ncd = np.std([utl.chromosome_branch_correlation(t)[3] for t in subtrees])
+
+        # calculate rate features
+        event_matrix, transitions = utl.read_event_matrix(emp_dir)
+        trans_std = [utl.count_events(t, event_matrix) for t in subtrees]
+        trans_std = {key: np.std([d[key] for d in trans_std]) for key in ['DYS', 'POL']}
+
+        # extract empirical AICc
+        empirical_aicc = utl.extract_score(emp_dir, string)
+
+        # loop over sim_num folders in sim_dir
+        for i in range(sim_num):
+            sim_counts = utl.get_counts(os.path.join(os.path.join(sim_dir, i), 'counts.fasta'))
+
+        # loop over sim_num folders in inf_dir
+        homogenous_aiccs = heterogenous_aiccs = []
+        for i in range(sim_num):
+            homogenous_aiccs.append( utl.extract_score(os.path.join(inf_dir, f'{i}_Homogenous'), string) )
+            heterogenous_aiccs.append( utl.extract_score(os.path.join(inf_dir, f'{i}_Heterogenous'), string) )
+
+        # avergae a few randomly sampled AICcs
+        choice = utl.choose_sims(sim_dir, sim_num, k=5, random=True)
+        repr_dAICc = np.mean(heterogenous_aiccs[choice]-homogenous_aiccs[choice])
+
+        # top cuttoff % deltaLL or deltaAICc
+        dAICc_cutoff = np.percentile(np.array(heterogenous_aiccs)-np.array(homogenous_aiccs), 100-p_cutoff)
+
+        new_features.append( {
+            'path': path,
+            'order_signal': utl.order_signal(mlar_tree),
+            'comparisons': utl.count_comparisons(mlar_tree, utl.get_min_clade(emp_dir)),
+            'entropy': np.std([utl.get_entropy(t) for t in subtrees]),
+            'correlation': correlation,
+            'mean_interaction': mean_interaction,
+            'reg_coef': reg_coef,
+            'norm_cum_diff': ncd,
+            'std_cum_diff': std_ncd,
+            'dys_transitions': transitions['DYS'],
+            'poly_transitions': transitions['POL'],
+            'dys_std': trans_std['DYS'],
+            'poly_std': trans_std['POL'],
+            'sim_feat1': None,
+            'sim_feat2': None,
+            'sim_feat3': None,
+            'sim_feat4': None,
+            'empirical_AICc': empirical_aicc,
+            'repr_dAICc': repr_dAICc,
+            'dAICc_cutoff': dAICc_cutoff
+        } )
+    return new_features
 
 def plot_learning_curve(model, num_rounds):
     eval_results = model.eval_results()
@@ -82,79 +130,41 @@ def plot_params_evolution(best_params_list, mse_list):
 
 def main(args):
 
-    sim_num = args.num_of_simulations
-    p_cutoff = args.p_cutoff
-
-    new_features = []
     taxa_df = pd.read_csv(args.data_path)
-    string = r'AICc of the best model = ([\d.]+)'
-    # [r'AICc of the best model = ([\d.]+)', r'Final optimized likelihood is: ([\d.]+)']
-
-    for path in taxa_df['path']:
-
-        emp_dir, sim_dir, inf_dir = utl.concat_paths(path, 'Homogenous')
-        mlar_tree = Tree(os.path.join(emp_dir, 'MLAncestralReconstruction.tree'))
-        emp_counts = utl.get_counts(os.path.join(emp_dir, 'counts.fasta'))
-
-        # get features using functions from utils.py
-        gain_r, loss_r, dupl_r, demi_r = utl.count_transitions(mlar_tree)
-        cum_diff, correlation, reg_coef, mean_interaction = utl.chromosome_branch_correlation(mlar_tree)
-        cum_diff = cum_diff / utl.get_branch_lengths(mlar_tree)
-
-        empirical_aicc = utl.extract_score(emp_dir, string)
-
-        # loop over sim_num folders in sim_dir
-        for i in range(sim_num):
-            sim_counts = utl.get_counts(os.path.join(os.path.join(sim_dir, i), 'counts.fasta'))
-
-        # loop over sim_num folders in inf_dir
-        homogenous_aiccs = []
-        heterogenous_aiccs = []
-        for i in range(sim_num):
-            homogenous_aiccs.append( utl.extract_score(os.path.join(inf_dir, f'{i}_Homogenous'), string) )
-            heterogenous_aiccs.append( utl.extract_score(os.path.join(inf_dir, f'{i}_Heterogenous'), string) )
-
-        # avergae a few randomly sampled AICcs
-        choice = random.sample(range(sim_num), 5)
-        avg_homogenous_aicc = np.mean(homogenous_aiccs[choice])
-        avg_heterogenous_aicc = np.mean(heterogenous_aiccs[choice])
-
-        # top cuttoff % deltaLL or deltaAICc
-        dAICc_cutoff = np.percentile(np.array(heterogenous_aiccs)-np.array(homogenous_aiccs), 100-p_cutoff)
-
-        new_features.append( {
-            'path': path,
-            'entropy': utl.get_entropy(mlar_tree),
-            'gain_ratio': gain_r,
-            'loss_ratio': loss_r,
-            'dupl_ratio': dupl_r,
-            'demi_ratio': demi_r,
-            'norm_cum_diff': cum_diff,
-            'correlation': correlation,
-            'mean_interaction': mean_interaction,
-            'empirical_AICc': empirical_aicc,
-            'avg_homogenous_AICc': avg_homogenous_aicc,
-            'avg_heterogenous_AICc': avg_heterogenous_aicc,
-            'dAICc_cutoff': dAICc_cutoff
-        } )
+    new_features = features_to_list(taxa_df['path'], args.num_of_simulations, args.p_cutoff)
 
     new_df = pd.DataFrame(new_features)
     new_df.reset_index(drop=True, inplace=True)
     taxa_df = taxa_df.merge(new_df, on='path', how='outer')
 
+    '''
+
+    Tasks:
+
+    1. how to normalize the AICc values? (min-max, z-score, etc.)
+    2. *AICc* or LL - LL is more sensitive to the number of taxa, so worse for the model
+    3. email Anat about bug
+    4. ask Keren about Astraceae
+    5. should we do PCA on all the stat features to reduce their number?
+    6. what to do about sim_feat1-4?
+
+    '''
+
+    # all 3 AICs cols should be norm by the same scaler!!! method - open for discussion
     # normalize the AICc target columns in the df using MinMaxScaler
     scaler = MinMaxScaler()
-    taxa_df['nrm_homogenous_AICc'] = scaler.fit_transform(taxa_df[['avg_homogenous_AICc']])
-    taxa_df['nrm_heterogenous_AICc'] = scaler.fit_transform(taxa_df[['avg_heterogenous_AICc']])
+    taxa_df['norm_empirical_AICc'] = scaler.fit_transform(taxa_df[['empirical_AICc']])
+    taxa_df['norm_repr_dAICc'] = scaler.fit_transform(taxa_df[['repr_dAICc']])
+    taxa_df['norm_dAICc_cutoff'] = scaler.fit_transform(taxa_df[['dAICc_cutoff']])
 
     # save the DataFrame back to a csv file
     taxa_df.to_csv(args.data_path, index=False)
 
     # split the data into train and test sets
-    feature_list = ['taxa', 'min', 'max', 'std', 'anomaly', 'symmetry', 'colless', 'diversity', 'scaling', 'MP', 'entropy',
-                        'gain_ratio', 'loss_ratio', 'dupl_ratio', 'demi_ratio', 'norm_cum_diff', 'correlation',
-                        'mean_interaction', 'empirical_AICc', 'nrm_homogenous_AICc', 'nrm_heterogenous_AICc']
-    target_name = 'dAICc_cutoff'
+    feature_list = ['taxa', 'median', 'std', 'anomaly', 'symmetry', 'colless', 'diversity', 'skewness', 'kurdosis',
+                    'scaling', 'MP', 'comparisons', 'order_signal', 'entropy', 'correlation', 'norm_cum_diff', 'std_cum_diff',
+                    'dys_transitions', 'pol_transitions', 'pol_std', 'dys_std', 'norm_empirical_AICc', 'norm_repr_dAICc']
+    target_name = 'norm_dAICc_cutoff'
 
     # train_features, test_features, train_target, test_target
     X_train, X_val, y_train, y_val = utl.split_data(taxa_df, feature_names=feature_list, target_name=target_name)
@@ -219,84 +229,8 @@ def main(args):
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='calculate additional features for the model')
-    #parser.add_argument('--emp_dir', '-e', type=str, help='path to empirical results')
-    #parser.add_argument('--sim_dir', '-s', type=str, help='path to simulation results')
-    #parser.add_argument('--inf_dir', '-i', type=str, help='path to inference results')
     parser.add_argument('--data_path', '-d', type=str, help='path to csv file summary')
     parser.add_argument('--num_of_simulations', '-n', type=int, help='number of simulations')
     parser.add_argument('--p_cutoff', '-p', type=float, default=5, help='percent cutoff applied to deltaLL')
 
     main(parser.parse_args())
-
-
-
-
-
-'''
-
-def normalize_aicc(aicc_values):
-    """
-    Normalize AICc values to the range [0, 1]
-    :param aicc_values: List or array of AICc values
-    :return: Normalized AICc values
-    """
-    min_aicc = min(aicc_values)
-    max_aicc = max(aicc_values)
-
-    normalized_aicc = (aicc_values - min_aicc) / (max_aicc - min_aicc)
-
-    return normalized_aicc
-
-
-def count_node_comparisons(tree):
-    #node.get_sisters())
-    pass
-
-
-
-def calculate_delta_log_likelihood(tree, simulated_trees):
-    delta_ll_stats = []
-    # Perform calculations for each simulation
-    for simulated_tree in simulated_trees:
-        delta_ll = simulated_tree.log_likelihood() - tree.log_likelihood()
-        delta_ll_stats.append(delta_ll)
-    return delta_ll_stats
-
-
-def calculate_event_sum_over_branch_length(tree):
-    event_sum = 0
-    branch_length_sum = 0.0
-    clade_count = 0
-    for node in tree.traverse("preorder"):
-        if not node.is_leaf():
-            branch_length_sum += node.dist
-            event_sum += count_events(node)  # Custom function to count events for a given node
-            clade_count += 1
-            if clade_count == 10:
-                break
-    if branch_length_sum > 0:
-        event_sum_over_length = event_sum / branch_length_sum
-    else:
-        event_sum_over_length = 0.0
-    return event_sum_over_length
-
-
-
-
-# Calculate the AICc based on the predictions
-def calculate_aicc_cutoff(predictions, y_true, num_features):
-    n = len(y_true)
-    residual_error = mean_squared_error(y_true, predictions) * n
-    num_params = num_features + 1  # Number of features + 1 (intercept term)
-    aicc = n * np.log(residual_error / n) + 2 * num_params + (2 * num_params * (num_params + 1)) / (n - num_params - 1)
-    return aicc
-
-# Calculate the AICc using the predictions
-aicc_cutoff = calculate_aicc_cutoff(predictions, y_test, len(features[0]))
-
-# Print the AICc cutoff
-print("AICc Cutoff:", aicc_cutoff)
-
-
-
-'''
