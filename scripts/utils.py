@@ -274,37 +274,58 @@ def parse_expected_outputs(path):
     return outputs
 
 
+def read_write_append(path, file_names, run=os.getcwd()):
+    fp = ''
+    for name in file_names:
+        fp = opj(path, name)
+        if os.path.exists(fp):
+            # read file and check if run is in it
+            with open(fp, 'r') as f:
+                if any(run in line for line in f):
+                    print(f'{run} found in {name}\nDone.')
+                    return
+    # append run to last file
+    with open(fp, 'a') as f:
+        f.write(f'{run}\n')
+        print(f'{run} appended to {name}\nDone.')
+
+
+def sprint(*args, silent=False, **kwargs):
+    if not silent:
+        print(*args, **kwargs)
+
+
 def check_output(path, name='out.txt', done='Total running time is:', stop='ParameterException',\
-    config=False, notif1='checking', notif2='Outputs found'):
+    config=False, notif1='checking', notif2='Outputs found', silent=False):
 
     if config:
         print(f'{notif1}: expected_outputs.txt')
         outputs = parse_expected_outputs(path)
         if outputs is None:
-            print('file does not exist yet')
+            print('expected_outputs.txt does not exist yet')
             return False
         paths = outputs['paths']
         name = outputs['name'] if 'name' in outputs else name
         done = outputs['done'] if 'done' in outputs else done
+        stop = outputs['stop'] if 'stop' in outputs else stop
     else:
         paths = [path]
 
     for p in paths:
         p = opj(p, name)
-        print(f'{notif1}: {p}')
+        sprint(f'{notif1}: {p}', silent=silent)
         if os.path.isfile(p):
             with open(p, 'r') as f:
                 content = f.read()
                 if stop in content:
                     print(f'Run failed: {p}')
-                    with open('failed_outputs.txt', 'a') as f:
-                        f.write(f'{p}\n')
+                    read_write_append('', ['failed_outputs.txt'], run=p)
                     return True
                 if done not in content:
-                    print('file is yet to be completed')
+                    print(f'File incomplete: {p}')
                     return False
         else:
-            print('file does not exist yet')
+            sprint(f'{name} does not exist yet', silent=silent)
             return False
     print(f'{notif2}: {len(paths)}')
     return True
@@ -327,16 +348,15 @@ def do_pilot_cmd(path, name, sim_num, model, mode, data, **kwargs):
     cwd = os.getcwd()
     emp_out, sim_out, inf_out = concat_paths(path, mode)
     scripts = [
-        {'call': f'{opj(cwd, "infer_empirical.py")} -i {path} -o {path} -m {model} -d {mode}', 'output': emp_out, 'config': False},
-        {'call': f'{opj(cwd, "simulate_models.py")} -i {emp_out} -o {sim_out} -n {sim_num}', 'output': sim_out, 'config': False},
-        {'call': f'{opj(cwd, "infer_on_sims.py")} -i {sim_out} -t {opj(emp_out, "tree.newick")} -m {model} -o {inf_out} -r {sim_num}', 'output': inf_out, 'config': True},
-        #{'call': f'{opj(cwd, "get_features.py")} -e {path} -s {sim_out} -i {inf_out} -d {data} -n {sim_num}', 'output': cwd, 'config': False},
-        {'call': f'{opj(cwd, "hello.py")}', 'output': cwd, 'config': False}
+        {'call': f'{opj(cwd, "infer_empirical.py")} -i {path} -o {path} -m {model} -d {mode}', 'params': {'path': emp_out, 'config': False}},
+        {'call': f'{opj(cwd, "simulate_models.py")} -i {emp_out} -o {sim_out} -n {sim_num}', 'params': {'path': sim_out, 'config': False, 'silent': True}},
+        {'call': f'{opj(cwd, "infer_on_sims.py")} -i {sim_out} -t {opj(emp_out, "tree.newick")} -m {model} -o {inf_out} -r {sim_num}', 'params': {'path': inf_out, 'config': True, 'silent': True}},
+        {'call': f'{opj(cwd, "terminator.py")} -d {data}', 'params': {'path': cwd, 'name': 'completed_outputs.txt', 'done': path, 'config': False}}
     ]
 
     cmd = ''
     for script in scripts:
-        if not check_output(script['output'], config=script['config']):
+        if not check_output(**script['params']):
             cmd += f'python {script["call"]}\n'
     
     send_job(path, name, cmd, **kwargs)
@@ -1060,14 +1080,14 @@ def get_entropy(mlar_tree):
 def chromosome_branch_correlation(mlar_tree):
     chromosome_diffs = []
     branch_lengths = []
-    normalized_cumulative_diff = 0
+    cumulative_normalized_diff = 0
     for node in mlar_tree.traverse():
         if node.up:
             chromosome_diff = extract_chrom(node) - extract_chrom(node.up)
             chromosome_diffs.append(chromosome_diff)
             branch_length = node.dist
             branch_lengths.append(branch_length)
-            normalized_cumulative_diff += abs(chromosome_diff) / branch_length
+            cumulative_normalized_diff += abs(chromosome_diff) / branch_length
 
     correlation = np.corrcoef(chromosome_diffs, branch_lengths)[0, 1]
 
@@ -1077,7 +1097,7 @@ def chromosome_branch_correlation(mlar_tree):
     results = model.fit()
     regression_coefficients = results.params[1]
 
-    return correlation, mean_interaction, regression_coefficients, normalized_cumulative_diff
+    return correlation, mean_interaction, regression_coefficients, cumulative_normalized_diff
 
 
 

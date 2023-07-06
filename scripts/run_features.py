@@ -23,8 +23,8 @@ def features_to_list(paths, sim_num, p_cutoff, string = r'AICc of the best model
         subtrees = utl.get_m_subtrees(mlar_tree, m=10, n=utl.count_taxa(mlar_tree)//15)
 
         # calculate correlation features
-        correlation, reg_coef, mean_interaction, ncd = utl.chromosome_branch_correlation(mlar_tree)
-        std_ncd = np.std([utl.chromosome_branch_correlation(t)[3] for t in subtrees])
+        correlation, reg_coef, mean_interaction, cum_norm_diff = utl.chromosome_branch_correlation(mlar_tree)
+        std_cn_diff = np.std([utl.chromosome_branch_correlation(t)[3] for t in subtrees])
 
         # calculate rate features
         event_matrix, transitions = utl.read_event_matrix(emp_dir)
@@ -55,12 +55,13 @@ def features_to_list(paths, sim_num, p_cutoff, string = r'AICc of the best model
             'path': path,
             'order_signal': utl.order_signal(mlar_tree),
             'comparisons': utl.count_comparisons(mlar_tree, utl.get_min_clade(emp_dir)),
-            'entropy': np.std([utl.get_entropy(t) for t in subtrees]),
+            'entropy': utl.get_entropy(mlar_tree),
+            'std_ent': np.std([utl.get_entropy(t) for t in subtrees]),
             'correlation': correlation,
             'mean_interaction': mean_interaction,
             'reg_coef': reg_coef,
-            'norm_cum_diff': ncd,
-            'std_cum_diff': std_ncd,
+            'cum_norm_diff': cum_norm_diff,
+            'std_cn_diff': std_cn_diff,
             'dys_transitions': transitions['DYS'],
             'poly_transitions': transitions['POL'],
             'dys_std': trans_std['DYS'],
@@ -161,8 +162,8 @@ def main(args):
     taxa_df.to_csv(args.data_path, index=False)
 
     # split the data into train and test sets
-    feature_list = ['taxa', 'median', 'std', 'anomaly', 'symmetry', 'colless', 'diversity', 'skewness', 'kurdosis',
-                    'scaling', 'MP', 'comparisons', 'order_signal', 'entropy', 'correlation', 'norm_cum_diff', 'std_cum_diff',
+    feature_list = ['taxa', 'range', 'median', 'std', 'anomaly', 'symmetry', 'colless', 'diversity', 'skewness', 'kurdosis',
+                    'scaling', 'MP', 'order_signal', 'comparisons', 'entropy', 'std_ent', 'correlation', 'cum_norm_diff', 'std_cn_diff',
                     'dys_transitions', 'pol_transitions', 'pol_std', 'dys_std', 'norm_empirical_AICc', 'norm_repr_dAICc']
     target_name = 'norm_dAICc_cutoff'
 

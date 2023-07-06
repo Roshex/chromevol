@@ -43,6 +43,7 @@ def taxa_to_list(trees_dir, min_taxa, max_polytomy):
             continue
         for file in files:
             if file.endswith('.newick'):
+                print('root directory:', root)
                 tree_file = os.path.join(root, file)
                 counts_file = os.path.join(root, 'counts.fasta')
                 try:
@@ -72,24 +73,24 @@ def taxa_to_list(trees_dir, min_taxa, max_polytomy):
                 taxa_list.append( {
                     'name': name,
                     'type': entry_type,
+                    'path': root,
+                    'unique': unique,
+                    'selected': 'Test' if (polytomy_ratio <= max_polytomy and taxa >= min_taxa and variation > 0) else 'False',
                     'taxa': taxa,
-                    'poly': polytomy_ratio,
-                    'min': np.min(counts),
-                    'max': np.max(counts),
+                    'range': np.max(counts)-np.min(counts),
                     'std': variation,
                     'mean': np.mean(counts),
                     'median': np.median(counts),
                     'anomaly': utl.anomaly_score(counts),
                     'symmetry': utl.symmetry_score(tree),
                     'colless': utl.colless_index(tree),
+                    'polytomy': polytomy_ratio,
                     'diversity': len(unique)/taxa,
                     'skewness': skewness,
                     'kurtosis': kurtosis,
                     'MAD': MAD,
                     'scaling': len(unique)/tree_length,
-                    'MP': utl.fitch(tree_file, counts_file=counts_file, mlar_tree=False),
-                    'path': root,
-                    'selected': 'Test' if (polytomy_ratio <= max_polytomy and taxa >= min_taxa and variation > 0) else 'False'
+                    'MP': utl.fitch(tree_file, counts_file=counts_file, mlar_tree=False)
                 } )
     return taxa_list
 
@@ -113,9 +114,10 @@ def main(args):
     if args.reuse:
         # load DataFrame from csv
         taxa_df = pd.read_csv(data_path)
+        print('loaded csv:', data_path)
     else:
         # create the DataFrame
-        taxa_df = pd.DataFrame(taxa_to_list(trees_dir, model, min_taxa, max_polytomy, train_split, bins))
+        taxa_df = pd.DataFrame(taxa_to_list(trees_dir, min_taxa, max_polytomy))
         taxa_df.reset_index(drop=True, inplace=True)
         
         # determine the training set
@@ -137,7 +139,7 @@ def main(args):
 
     # loop over the DataFrame based on the 'selected' column
     counter = 0
-    for index, row in taxa_df.iterrows():
+    for _, row in taxa_df.iterrows():
         
         if str(row['selected'])[0] == 'T':
         

@@ -29,6 +29,9 @@ def main(args):
     output_dirs = []
     for _ in rng:
         sim_dir = os.path.join(sims_dir, str(_))
+        if not os.path.exists(sim_dir):
+            print(f'Simulation {_} directory not found!')
+            continue
         counts_path = os.path.join(sim_dir, 'counts.fasta')
 
         # get number of taxa in the tree, to approx cpu & memory requirements
